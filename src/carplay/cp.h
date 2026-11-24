@@ -171,6 +171,9 @@ extern volatile int audio_playing;   /* the iPhone's playback state (iAP2 NowPla
 void audio_set_playing(int playing); /* cp_iap2.c, from NowPlaying */
 void audio_media_pause(void);        /* a pause key: queued media dropped, arriving media ignored until playing again */
 void audio_media_resume(void);       /* a play key: media taken again at once */
+void audio_media_skip(void);         /* next / previous while playing: queued media dropped, arriving media ignored
+                                        until the new track is reported */
+void audio_track_changed(void);      /* cp_iap2.c: NowPlaying reports another track */
 struct decoder;
 struct decoder* decoder_open(int codec, int rate, int channels);
 int decoder_rate(const struct decoder* d);       /* of the output */

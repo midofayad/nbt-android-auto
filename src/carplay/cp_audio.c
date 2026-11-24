@@ -139,30 +139,60 @@ volatile int audio_playing;
 /* After a pause key the queued music would play on (0.2-0.4 s, plus the car's output), and the iPhone still sends a
  * little after it paused (car 2026-11-24: a short burst after the pause). So: the queue is dropped and arriving media
  * ignored until the iPhone plays again (NowPlaying after it reported the pause, or a play key); if it does not report
- * the pause within 1.5 s (the key did not pause), media is taken again. */
+ * the pause within 1.5 s (the key did not pause), media is taken again. The same after next / previous: until
+ * NowPlaying reports the new track (title, queue index, elapsed time near 0), at most 1.5 s. Ignored packets are
+ * counted in the log. */
+enum { QUIET_PAUSE = 1, QUIET_SKIP };
 static struct {
     int on, saw_paused;
     long long since;
+    unsigned ignored;
 } g_quiet;
 
-void audio_media_pause(void)
+static void quiet_end(const char* why)   /* with g_m held */
+{
+    say("audio: %s, media taken (%u packets ignored in %lld ms)", why, g_quiet.ignored, ms_now() - g_quiet.since);
+    g_quiet.on = 0;
+}
+
+static void quiet_start(int kind, const char* why)
 {
     unsigned n;
     pthread_mutex_lock(&g_m);
     n = g_q[Q_MEDIA].count;
     g_q[Q_MEDIA].rd = g_q[Q_MEDIA].count = 0;
     g_q[Q_MEDIA].waiting = 1;
-    g_quiet.on = 1;
+    g_quiet.on = kind;
     g_quiet.saw_paused = !audio_playing;
     g_quiet.since = ms_now();
+    g_quiet.ignored = 0;
     pthread_mutex_unlock(&g_m);
-    say("audio: pause key: %u queued media frames dropped, media ignored until playing again", n);
+    say("audio: %s key: %u queued media frames dropped", why, n);
+}
+
+void audio_media_pause(void)
+{
+    quiet_start(QUIET_PAUSE, "pause");
+}
+
+void audio_media_skip(void)
+{
+    quiet_start(QUIET_SKIP, "next / previous");
 }
 
 void audio_media_resume(void)
 {
     pthread_mutex_lock(&g_m);
-    g_quiet.on = 0;
+    if (g_quiet.on)
+        quiet_end("play key");
+    pthread_mutex_unlock(&g_m);
+}
+
+void audio_track_changed(void)
+{
+    pthread_mutex_lock(&g_m);
+    if (g_quiet.on == QUIET_SKIP)
+        quiet_end("new track reported");
     pthread_mutex_unlock(&g_m);
 }
 
@@ -170,22 +200,22 @@ void audio_set_playing(int playing)
 {
     pthread_mutex_lock(&g_m);
     audio_playing = playing;
-    if (g_quiet.on && !playing)
+    if (g_quiet.on == QUIET_PAUSE && !playing)
         g_quiet.saw_paused = 1;
-    else if (g_quiet.on && playing && g_quiet.saw_paused) {
-        g_quiet.on = 0;
-        say("audio: playing again, media taken");
-    }
+    else if (g_quiet.on == QUIET_PAUSE && playing && g_quiet.saw_paused)
+        quiet_end("playing again");
     pthread_mutex_unlock(&g_m);
 }
 
 /* with g_m held: whether arriving media is ignored now */
 static int media_quiet(void)
 {
-    if (g_quiet.on && !g_quiet.saw_paused && ms_now() - g_quiet.since > 1500) {
-        g_quiet.on = 0;   /* the iPhone did not pause */
-        say("audio: no pause reported, media taken");
-    }
+    if (g_quiet.on == QUIET_PAUSE && !g_quiet.saw_paused && ms_now() - g_quiet.since > 1500)
+        quiet_end("no pause reported");
+    else if (g_quiet.on == QUIET_SKIP && ms_now() - g_quiet.since > 1500)
+        quiet_end("no new track reported");
+    if (g_quiet.on)
+        ++g_quiet.ignored;
     return g_quiet.on;
 }
 

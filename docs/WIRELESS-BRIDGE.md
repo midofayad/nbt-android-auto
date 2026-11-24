@@ -91,7 +91,8 @@ same way as the cable's. In the car: music (AAC-LC 44.1 kHz) and the rest play. 
 of media in its queue (the iPhone sends bursts at the start); the rest of the delay before music starts is the
 iPhone's own and the car's output. A pause key while music plays drops the queued music and ignores what still arrives
 until the iPhone plays again (it sends a short burst after it paused), so the music stops when the key is pressed
-(otherwise about 0.5 s later).
+(otherwise about 0.5 s later). Next / previous while music plays: the same until the iPhone reports the new track
+(NowPlaying: title, queue index or an elapsed time near 0; at most 1.5 s).
 
 The board must not take the iPhone's Bluetooth audio: `nbt-setup.sh` runs bluetoothd without its A2DP / AVRCP plugins
 and disables PipeWire / WirePlumber (with them, the trusted iPhone sent its sound to the board).

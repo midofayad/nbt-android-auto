@@ -362,11 +362,29 @@ static void carplay_start(struct link* l)
     cp_reached(STOP_IAP2);
 }
 
+/* NowPlayingUpdate: the media item (0: title 1, ...) and the playback (1: status 0, elapsed ms 1, queue index 2).
+ * A new track (another title or queue index, or an elapsed time near 0) ends the quiet after next / previous */
 static void now_playing(struct link* l, const unsigned char* p, unsigned n)
 {
+    static char title[128];
+    static unsigned index = ~0u;
     unsigned len, l2;
     const unsigned char* g = prm_find(p, n, 1, &len);
-    const unsigned char* st;
+    const unsigned char* item = prm_find(p, n, 0, &l2);
+    const unsigned char *st, *v;
+    int track = 0;
+    if (item && (v = prm_find(item, l2, 1, &l2)) != 0 && l2 && strncmp(title, (const char*)v, sizeof(title) - 1)) {
+        snprintf(title, sizeof(title), "%.*s", (int)l2, (const char*)v);
+        track = 1;
+    }
+    if (g && (v = prm_find(g, len, 2, &l2)) != 0 && l2 == 4 && get32(v) != index) {
+        index = get32(v);
+        track = 1;
+    }
+    if (g && (v = prm_find(g, len, 1, &l2)) != 0 && l2 == 4 && get32(v) < 1500)
+        track = 1;
+    if (track)
+        audio_track_changed();
     if (!g || !(st = prm_find(g, len, 0, &l2)) || l2 < 1)
         return;
     say("%s: playback state %u", l->name, st[0]);
