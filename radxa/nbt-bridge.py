@@ -14,9 +14,17 @@ Relay protocol (text lines, then raw bytes): we send "nbt-bridge 1", bt, bssid, 
 nbt_carplay answers deviceid, features, pk, pi, srcvers, model, name, address, port, "end"; when an iPhone's RFCOMM
 channel is open we send "iap2 <address>" and relay. The TCP connection lasts one CarPlay session: nbt_carplay closes
 it when the session is over, and we start again.
+Bluetooth service records (as head units with wireless CarPlay): the accessory's iAP2 service
+(00000000-deca-fade-deca-deafdecacaff, an RFCOMM channel we also accept iPhones on) and the CarPlay vehicle service
+(d31fbf50-5d57-2797-a240-41cd484388ec); the iPhone reads them when it pairs and only then counts the board as a car.
+They are registered over bluetoothd's local SDP socket (/run/sdp, bluetoothd --compat, from nbt-setup.sh) and stay
+while that connection is open.
 Pairing: the board is always discoverable ("BMW NBT", car audio class, from nbt-setup.sh) and bluetoothctl runs here
 in a pseudo-terminal as the pairing agent: every pairing request is accepted and every newly paired device trusted, so
-an iPhone pairs from its Bluetooth settings like with a car.
+an iPhone pairs from its Bluetooth settings like with a car. Its Bluetooth audio and other services (hands-free, media
+control, A2DP) are refused: the sound goes through CarPlay to the NBT. When pairing keeps failing (after "Forget This
+Device" on the iPhone the next pairings fail their final check until the board's Bluetooth starts afresh), the
+Bluetooth chip is reset and bluetoothd restarted.
 Needs: python3 (with Bluetooth sockets), bluez (bluetoothctl, sdptool), avahi-daemon and avahi-utils.
 """
 import os
@@ -24,12 +32,16 @@ import pty
 import re
 import select
 import socket
+import struct
 import subprocess
 import threading
 import time
 
 CONF = "/etc/nbt-bridge.conf"
 IAP2_PHONE_UUID = "00000000-deca-fade-deca-deafdecacafe"   # the iPhone's iAP2 RFCOMM service
+IAP2_ACCESSORY_UUID = "00000000-deca-fade-deca-deafdecacaff"
+CARPLAY_VEHICLE_UUID = "d31fbf50-5d57-2797-a240-41cd484388ec"
+SDP_SOCKET = "/run/sdp"
 MAC = r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}"
 
 
@@ -105,6 +117,94 @@ def rfcomm(mac, channel):
     return s
 
 
+# ---- SDP records ----
+
+def _seq(*items):
+    b = b"".join(items)
+    return (bytes([0x35, len(b)]) if len(b) < 256 else b"\x36" + struct.pack(">H", len(b))) + b
+
+
+def _u8(v):
+    return bytes([0x08, v])
+
+
+def _u16(v):
+    return b"\x09" + struct.pack(">H", v)
+
+
+def _uuid16(v):
+    return b"\x19" + struct.pack(">H", v)
+
+
+def _uuid128(u):
+    return b"\x1c" + bytes.fromhex(u.replace("-", ""))
+
+
+def _text(t):
+    b = t.encode()
+    return bytes([0x25, len(b)]) + b
+
+
+def sdp_record(uuid, name, channel):
+    """service class, RFCOMM channel, public browse group, name"""
+    return _seq(_u16(0x0001), _seq(_uuid128(uuid)),
+                _u16(0x0004), _seq(_seq(_uuid16(0x0100)), _seq(_uuid16(0x0003), _u8(channel))),
+                _u16(0x0005), _seq(_uuid16(0x1002)),
+                _u16(0x0100), _text(name))
+
+
+class SdpRecords(threading.Thread):
+    """keeps the records registered with bluetoothd (again after it restarts)"""
+
+    def __init__(self, channel):
+        super().__init__(daemon=True)
+        self.records = [(IAP2_ACCESSORY_UUID, "Wireless iAP", channel),
+                        (CARPLAY_VEHICLE_UUID, "CarPlay", channel + 1)]
+
+    def register(self, s, tid, record):
+        s.sendall(bytes([0x75]) + struct.pack(">HH", tid, len(record) + 1) + b"\0" + record)
+        r = s.recv(64)
+        if len(r) >= 9 and r[0] == 0x76:
+            return struct.unpack(">I", r[5:9])[0]
+        raise OSError("SDP register refused: %s" % r.hex())
+
+    def run(self):
+        said = False
+        while True:
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(SDP_SOCKET)
+                for tid, (uuid, name, ch) in enumerate(self.records, 1):
+                    h = self.register(s, tid, sdp_record(uuid, name, ch))
+                    log("SDP: %s (%s) on RFCOMM channel %d, record 0x%x" % (name, uuid, ch, h))
+                said = False
+                while s.recv(64):   # until bluetoothd goes away
+                    pass
+                log("SDP: bluetoothd went away, registering again")
+            except OSError as e:
+                if not said:
+                    log("SDP: cannot register (%s); bluetoothd needs --compat (nbt-setup.sh)" % e)
+                    said = True
+            try:
+                s.close()
+            except OSError:
+                pass
+            time.sleep(3)
+
+
+def rfcomm_listener():
+    """an RFCOMM channel the iPhone can connect to (the accessory's iAP2 service); (socket, channel)"""
+    for ch in range(5, 31):
+        s = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+        try:
+            s.bind((socket.BDADDR_ANY, ch))
+            s.listen(1)
+            return s, ch
+        except OSError:
+            s.close()
+    raise OSError("no free RFCOMM channel")
+
+
 class Agent(threading.Thread):
     """bluetoothctl in a pseudo-terminal: discoverable, pairable, every request accepted, new devices trusted"""
     SETUP = ["power on", "agent DisplayYesNo", "default-agent", "pairable on", "discoverable-timeout 0",
@@ -115,6 +215,13 @@ class Agent(threading.Thread):
 
     def send(self, fd, line):
         os.write(fd, (line + "\n").encode())
+
+    @staticmethod
+    def reset_bluetooth():
+        log("agent: pairing keeps failing - resetting the Bluetooth chip and bluetoothd")
+        run("/usr/local/sbin/nbt-bt-up.sh", "--force", timeout=120)
+        run("systemctl", "restart", "bluetooth", timeout=60)
+        time.sleep(3)
 
     def run(self):
         while True:
@@ -134,6 +241,8 @@ class Agent(threading.Thread):
                 time.sleep(0.2)
             log("agent: discoverable and pairable")
             buf = ""
+            confirms = []   # times of passkey confirmations since the last successful pairing
+            reset = False
             while True:
                 try:
                     data = os.read(fd, 4096).decode(errors="replace")
@@ -145,18 +254,28 @@ class Agent(threading.Thread):
                 lines = buf.split("\n")
                 buf = lines.pop()   # a prompt has no line end
                 if "(yes/no)" in buf:
-                    log("agent:", buf.strip(), "-> yes")
-                    self.send(fd, "yes")
+                    answer = "no" if "Authorize service" in buf else "yes"
+                    log("agent:", buf.strip(), "->", answer)
+                    self.send(fd, answer)
+                    if "Confirm passkey" in buf:
+                        now = time.time()
+                        confirms = [t for t in confirms if now - t < 30] + [now]
+                        reset = len(confirms) >= 3
                     buf = ""
                 for line in lines:
                     m = re.search(r"Device (%s) Paired: yes" % MAC, line)
                     if m:
+                        confirms = []
                         mac = m.group(1).upper()
                         log("agent: paired with", mac, "- trusting it")
                         self.send(fd, "trust " + mac)
                         threading.Thread(target=iap2_channel, args=(mac,), daemon=True).start()
                     elif re.search(r"Device %s Connected: |\[NEW\] Device|Pairing|[Ff]ailed" % MAC, line):
                         log("agent:", line.strip())
+                if reset:
+                    os.kill(pid, 15)
+                    self.reset_bluetooth()
+                    break
             try:
                 os.waitpid(pid, 0)
             except OSError:
@@ -315,7 +434,20 @@ def wait_closed(sock, seconds=None):
                 return True
 
 
-def session(c, bt, bssid):
+def serve_phone(phone, mac, nbt, rest):
+    """relay one iPhone's iAP2; True when the session is over (the NBT ended it)"""
+    with phone:
+        nbt.sendall(("iap2 %s\n" % mac).encode())
+        if rest:
+            phone.sendall(rest)
+        if not relay(phone, nbt):
+            return True
+    wait_closed(nbt)   # the iPhone is on Wi-Fi now; the NBT ends the relay after the session
+    log("the NBT ended the session")
+    return True
+
+
+def session(c, bt, bssid, listener):
     scope = socket.if_nametoindex(c["IFACE"])
     nbt = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     nbt.settimeout(3)
@@ -343,16 +475,15 @@ def session(c, bt, bssid):
                     _channels.pop(mac, None)   # looked up again next time
                     continue
                 log("RFCOMM to", name, mac, "open")
-                with phone:
-                    nbt.sendall(("iap2 %s\n" % mac).encode())
-                    if rest:
-                        phone.sendall(rest)
-                    if not relay(phone, nbt):
-                        return
-                wait_closed(nbt)   # the iPhone is on Wi-Fi now; the NBT ends the relay after the session
-                log("the NBT ended the session")
+                serve_phone(phone, mac, nbt, rest)
                 return
-            if wait_closed(nbt, 5):
+            r, _, _ = select.select([nbt, listener], [], [], 5)
+            if listener in r:
+                phone, (mac, ch) = listener.accept()
+                log("RFCOMM from", mac.upper(), "(the iPhone connected to us)")
+                serve_phone(phone, mac.upper(), nbt, rest)
+                return
+            if nbt in r and wait_closed(nbt, 0.5):
                 log("the NBT closed the relay")
                 return
     finally:
@@ -361,6 +492,8 @@ def session(c, bt, bssid):
 
 
 def main():
+    listener, channel = rfcomm_listener()
+    SdpRecords(channel).start()
     Agent().start()
     time.sleep(3)
     for mac, name in paired_phones():
@@ -380,7 +513,7 @@ def main():
             time.sleep(5)
             continue
         try:
-            session(c, bt, bssid)
+            session(c, bt, bssid, listener)
             last = None
         except OSError as e:
             if str(e) != last:   # the same failure (the NBT not there yet) only once

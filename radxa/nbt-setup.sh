@@ -30,6 +30,19 @@ C=/etc/bluetooth/main.conf
 [ -f $C.nbt-orig ] || cp $C $C.nbt-orig
 sed -i -e '/^\(Name\|Class\|DiscoverableTimeout\|PairableTimeout\|AlwaysPairable\) *=/d' $C
 sed -i -e '/^\[General\]/a Name = BMW NBT\nClass = 0x200420\nDiscoverableTimeout = 0\nPairableTimeout = 0\nAlwaysPairable = true' $C
+# bluetoothd with its local SDP socket (/run/sdp): nbt-bridge registers the CarPlay service records there; without
+# Bluetooth audio (A2DP, AVRCP): the iPhone's sound goes through CarPlay to the NBT, not to the board
+BTD=$(ls /usr/libexec/bluetooth/bluetoothd /usr/lib/bluetooth/bluetoothd 2>/dev/null | head -n 1)
+mkdir -p /etc/systemd/system/bluetooth.service.d
+printf '[Service]\nExecStart=\nExecStart=%s --compat --noplugin=a2dp,avrcp\n' "$BTD" \
+    > /etc/systemd/system/bluetooth.service.d/nbt-compat.conf
+# and no PipeWire / WirePlumber (they register Bluetooth audio and hands-free with bluetoothd for every login)
+systemctl --global mask pipewire.service pipewire.socket pipewire-pulse.service pipewire-pulse.socket \
+    wireplumber.service >/dev/null 2>&1 || true
+pkill -x wireplumber || true
+pkill -x pipewire-pulse || true
+pkill -x pipewire || true
+systemctl daemon-reload
 systemctl enable bluetooth avahi-daemon
 systemctl restart bluetooth
 systemctl start avahi-daemon
@@ -41,4 +54,4 @@ systemctl restart nbt-bridge
 sleep 5
 systemctl --no-pager status nbt-gadget nbt-bridge | grep -e "●" -e Active
 journalctl -u nbt-bridge --no-pager -n 10
-echo "nbt-setup: done. Pair the iPhone: Settings > Bluetooth > BMW NBT."
+echo "nbt-setup: done. Reboot, then pair the iPhone: Settings > Bluetooth > BMW NBT."

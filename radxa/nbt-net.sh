@@ -8,8 +8,10 @@
 # shared mode on br0. Writes /etc/nbt-bridge.conf for nbt-bridge.py. Run again to change the name or the passphrase.
 #   sudo nbt-net.sh [SSID [PASSPHRASE]]
 set -e
-SSID=${1:-NBT-CarPlay}
-PSK=${2:-$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)}
+# without arguments: the access point of an earlier run, if any
+[ $# -eq 0 ] && [ -f /etc/nbt-bridge.conf ] && . /etc/nbt-bridge.conf
+SSID=${1:-${SSID:-NBT-CarPlay}}
+PSK=${2:-${PSK:-$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)}}
 CHANNEL=36
 WLAN=${WLAN:-wlan0}
 
