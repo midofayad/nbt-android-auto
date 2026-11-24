@@ -13,6 +13,12 @@
  *   RECORD, TEARDOWN, POST /command (modes, UI requests), POST /feedback (audio clocks)
  * The event connection (we listen, the iPhone connects) carries our commands: HID reports (knob, media keys), Siri,
  * key frame requests.
+ * Wireless (docs/WIRELESS-BRIDGE.md): deviceID and bluetoothIDs are the bridge board's Wi-Fi and Bluetooth addresses,
+ * and the iPhone moves iAP2 into stream 130 (clientTypeUUID E9459FD0-..., as xcertplay's IapTunnel): it connects to
+ * the data port we give and sends ChaCha20-Poly1305 frames (key from "DataStream-Salt<seed>" /
+ * "DataStream-Output-Encryption-Key") of packages {u32 BE size, ..., u32 BE type at 16, body at 32}; the bodies of type
+ * "comm" are iAP2 bytes. Ours go back as the command iAPSendMessage {data} on the event connection. cp_iap2.c runs
+ * the link (identification, authentication again) as long as the stream lasts.
  */
 #include <pthread.h>
 #include <stdio.h>
@@ -25,8 +31,9 @@
 #include "cp_crypto.h"
 
 #define MAIN_UUID "e5f7a68d-7b0f-4305-984b-974f677a150b"
-#define DEVICE_ID "02:00:00:00:00:02"
-#define BT_ID "02:00:00:00:00:01"
+#define DEVICE_ID (g_opt.device_id[0] ? g_opt.device_id : "02:00:00:00:00:02")
+#define BT_ID (g_opt.bt_id[0] ? g_opt.bt_id : "02:00:00:00:00:01")
+#define IAP_STREAM_UUID "E9459FD0-BCAD-4C45-820F-1E72447EF2F2"
 #define FEATURES 0x615653aee2ULL
 #define PLIST "application/x-apple-binary-plist"
 
@@ -69,6 +76,16 @@ keys:
     tohex(g_public_hex, g_public, 32);
     say("airplay: identity %s, key %.16s...", g_pairing_id, g_public_hex);
     return 0;
+}
+
+const char* airplay_pairing_id(void)
+{
+    return g_pairing_id;
+}
+
+unsigned long long airplay_features(void)
+{
+    return FEATURES;
 }
 
 const char* airplay_public_hex(void)
@@ -227,6 +244,7 @@ struct session {
     unsigned char mic_key[32];
     int mic_rate, mic_channels, mic_frames;
     int keepalive_s;
+    int tunnel;                                         /* the iAP2 stream (130) is ours */
     unsigned char raw[1 << 17], plain[1 << 18];         /* control connection: received, decrypted */
     unsigned char ev_raw[1 << 16], ev_plain[1 << 16];   /* event connection */
     volatile int closing;
@@ -234,6 +252,8 @@ struct session {
 
 static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;   /* g_cur and event sends */
 static struct session* g_cur;
+static int g_sessions;
+static const struct iap2_carplay* g_wireless;              /* wireless: the iAP2 tunnel's CarPlay parameters */
 
 /* ---- encrypted frames: {u16 LE length, ciphertext, 16-byte tag}, AAD = the length, nonce = counter ---- */
 
@@ -961,6 +981,197 @@ int airplay_connected(void)
     return r;
 }
 
+int airplay_sessions(void)
+{
+    int r;
+    pthread_mutex_lock(&g_m);
+    r = g_sessions;
+    pthread_mutex_unlock(&g_m);
+    return r;
+}
+
+int airplay_active(void)
+{
+    int r;
+    pthread_mutex_lock(&g_m);
+    r = g_cur != 0;
+    pthread_mutex_unlock(&g_m);
+    return r;
+}
+
+void airplay_wireless(const struct iap2_carplay* cp)
+{
+    g_wireless = cp;
+}
+
+/* ---- wireless: the iAP2 tunnel (stream 130) ---- */
+
+static struct {
+    pthread_mutex_t m;
+    pthread_cond_t c;
+    int listen_s, s, on, ended;
+    struct cipher k;
+    unsigned char raw[1 << 16], plain[1 << 17], q[1 << 17];
+    unsigned rawn, plainn, qn;
+    pthread_t t;
+} g_tun = {.m = PTHREAD_MUTEX_INITIALIZER, .c = PTHREAD_COND_INITIALIZER, .listen_s = -1, .s = -1};
+
+static int tunnel_write(void* ctx, const unsigned char* b, unsigned n)
+{
+    struct bp *c = bp_dict(), *p;
+    (void)ctx;
+    bp_set(c, "type", bp_str("iAPSendMessage"));
+    p = bp_set(c, "params", bp_dict());
+    bp_set(p, "data", bp_data(b, n));
+    return event_send(c) ? -1 : 0;
+}
+
+static int tunnel_read(void* ctx, unsigned char* b, unsigned n, unsigned ms)
+{
+    struct timespec t;
+    int r;
+    (void)ctx;
+    clock_gettime(CLOCK_REALTIME, &t);
+    t.tv_sec += ms / 1000;
+    t.tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (t.tv_nsec >= 1000000000L) {
+        t.tv_sec++;
+        t.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&g_tun.m);
+    while (!g_tun.qn && !g_tun.ended && !g_stop)
+        if (pthread_cond_timedwait(&g_tun.c, &g_tun.m, &t))
+            break;
+    if (g_tun.qn) {
+        r = (int)(g_tun.qn < n ? g_tun.qn : n);
+        memcpy(b, g_tun.q, (unsigned)r);
+        memmove(g_tun.q, g_tun.q + r, g_tun.qn - (unsigned)r);
+        g_tun.qn -= (unsigned)r;
+    } else
+        r = g_tun.ended ? -1 : 0;
+    pthread_mutex_unlock(&g_tun.m);
+    return r;
+}
+
+static const struct iap2_io TUNNEL_IO = {tunnel_write, tunnel_read, 0};
+
+static void* tunnel_link(void* arg)
+{
+    (void)arg;
+    say("airplay: iAP2 over the tunnel starts");
+    iap2_run(&TUNNEL_IO, g_wireless, IAP2_TUNNEL);
+    return 0;
+}
+
+/* the packages' "comm" bodies into the queue for tunnel_read; -1 = broken */
+static int tunnel_packages(void)
+{
+    unsigned at = 0;
+    while (g_tun.plainn - at >= 32) {
+        const unsigned size = get32(g_tun.plain + at);
+        if (size < 32 || size > sizeof(g_tun.plain))
+            return -1;
+        if (g_tun.plainn - at < size)
+            break;
+        if (get32(g_tun.plain + at + 16) == 0x636f6d6du) {   /* "comm" */
+            pthread_mutex_lock(&g_tun.m);
+            if (g_tun.qn + size - 32 <= sizeof(g_tun.q)) {
+                memcpy(g_tun.q + g_tun.qn, g_tun.plain + at + 32, size - 32);
+                g_tun.qn += size - 32;
+            } else
+                say("airplay: iAP2 tunnel: queue full, %u bytes dropped", size - 32);
+            pthread_cond_signal(&g_tun.c);
+            pthread_mutex_unlock(&g_tun.m);
+        }
+        at += size;
+    }
+    memmove(g_tun.plain, g_tun.plain + at, g_tun.plainn - at);
+    g_tun.plainn -= at;
+    return 0;
+}
+
+static void* tunnel_thread(void* arg)
+{
+    struct net_addr peer;
+    pthread_t link;
+    int c = -1, link_on = 0;
+    long long until = ms_now() + 30000;
+    (void)arg;
+    while (!g_tun.ended && !g_stop && ms_now() < until) {
+        c = net_accept(g_tun.listen_s, &peer, 1000);
+        if (c >= 0 || c == -1)
+            break;
+    }
+    if (c < 0) {
+        say("airplay: the iPhone did not connect to the iAP2 tunnel");
+        goto out;
+    }
+    g_tun.s = c;
+    say("airplay: iAP2 tunnel connected");
+    link_on = !pthread_create(&link, 0, tunnel_link, 0);
+    while (!g_tun.ended && !g_stop) {
+        const int r = net_recv(c, g_tun.raw + g_tun.rawn, (int)(sizeof(g_tun.raw) - g_tun.rawn), 1000);
+        if (r == -2)
+            continue;
+        if (r <= 0) {
+            say("airplay: the iPhone closed the iAP2 tunnel");
+            break;
+        }
+        g_tun.rawn += (unsigned)r;
+        if (open_frames(&g_tun.k, g_tun.raw, &g_tun.rawn, g_tun.plain, &g_tun.plainn, sizeof(g_tun.plain)) ||
+            tunnel_packages()) {
+            say("airplay: iAP2 tunnel: unreadable data");
+            break;
+        }
+    }
+out:
+    pthread_mutex_lock(&g_tun.m);
+    g_tun.ended = 1;
+    pthread_cond_broadcast(&g_tun.c);
+    pthread_mutex_unlock(&g_tun.m);
+    if (link_on)
+        pthread_join(link, 0);
+    return 0;
+}
+
+static void tunnel_close(void)
+{
+    if (!g_tun.on)
+        return;
+    pthread_mutex_lock(&g_tun.m);
+    g_tun.ended = 1;
+    pthread_cond_broadcast(&g_tun.c);
+    pthread_mutex_unlock(&g_tun.m);
+    pthread_join(g_tun.t, 0);
+    net_close(g_tun.s);
+    net_close(g_tun.listen_s);
+    g_tun.s = g_tun.listen_s = -1;
+    g_tun.on = 0;
+}
+
+/* SETUP of stream 130: a port for the iPhone and the thread that reads it; 0 = the port in *port */
+static int tunnel_open(const struct session* s, unsigned long long seed, unsigned short* port)
+{
+    char salt[64];
+    tunnel_close();
+    g_tun.listen_s = net_tcp_listen(0, port);
+    if (g_tun.listen_s < 0)
+        return -1;
+    memset(&g_tun.k, 0, sizeof(g_tun.k));
+    snprintf(salt, sizeof(salt), "DataStream-Salt%llu", seed);
+    hkdf512(s->shared, 32, salt, "DataStream-Output-Encryption-Key", g_tun.k.key_read, 32);
+    g_tun.rawn = g_tun.plainn = g_tun.qn = 0;
+    g_tun.ended = 0;
+    g_tun.s = -1;
+    if (pthread_create(&g_tun.t, 0, tunnel_thread, 0)) {
+        net_close(g_tun.listen_s);
+        g_tun.listen_s = -1;
+        return -1;
+    }
+    g_tun.on = 1;
+    return 0;
+}
+
 /* ---- timing: 32-byte packets, 210 request / 211 answer, timestamps at 8 (origin), 16 (receive), 24 (transmit) ---- */
 
 static pthread_mutex_t g_clock = PTHREAD_MUTEX_INITIALIZER;
@@ -1181,6 +1392,22 @@ static void setup_streams(struct session* s, const struct bp* list, struct respo
                 s->mic_frames = (int)bp_num_or(st, "framesPerPacket", 0);
                 s->mic_pending = 1;
             }
+        } else if (type == 130 && g_wireless && bp_text(st, "clientTypeUUID") &&
+                   !strcasecmp(bp_text(st, "clientTypeUUID"), IAP_STREAM_UUID)) {
+            const struct bp* sv = bp_get(st, "seed");
+            unsigned short port = 0;
+            if (tunnel_open(s, sv && sv->type == BP_INT ? sv->u : 0, &port))
+                continue;
+            s->tunnel = 1;
+            {
+                struct bp* e = bp_add(streams, bp_dict());
+                bp_set(e, "type", bp_int(130));
+                bp_set(e, "streamID", bp_int(1));
+                bp_set(e, "dataPort", bp_int(port));
+                if (idv)
+                    bp_set(e, "streamConnectionID", bp_uint(connection));
+            }
+            say("airplay: iAP2 tunnel on port %u", port);
         } else
             say("airplay: stream type %lld not offered", type);
     }
@@ -1199,7 +1426,9 @@ static void teardown(struct session* s, const struct bp* d)
         screen_close();
         audio_stream_close(-1);
         mic_stop();
-        s->screen = 0;
+        if (s->tunnel)
+            tunnel_close();
+        s->screen = s->tunnel = 0;
         memset(s->audio, 0, sizeof(s->audio));
         return;
     }
@@ -1209,6 +1438,9 @@ static void teardown(struct session* s, const struct bp* d)
         if (type == 110) {
             screen_close();
             s->screen = 0;
+        } else if (type == 130 && s->tunnel) {
+            tunnel_close();
+            s->tunnel = 0;
         } else if (type >= 100 && type <= 102) {
             if (type == 100)
                 mic_stop();
@@ -1349,6 +1581,8 @@ static void session_end(struct session* s)
     mic_stop();
     screen_close();
     audio_stream_close(-1);
+    if (s->tunnel)
+        tunnel_close();
     if (s->ev_thread_on)
         pthread_join(s->ev_thread, 0);
     net_close(s->ev_listen);
@@ -1373,6 +1607,7 @@ static void* session_thread(void* arg)
     say("airplay: connection from %s", net_text(&s->peer, peer, sizeof(peer)));
     pthread_mutex_lock(&g_m);
     g_cur = s;
+    ++g_sessions;
     pthread_mutex_unlock(&g_m);
     while (!g_stop) {
         struct request q;

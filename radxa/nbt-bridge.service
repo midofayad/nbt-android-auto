@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Valentin Radu
+[Unit]
+Description=Wireless CarPlay bridge for the NBT (Bluetooth iAP2 relay, mDNS)
+After=bluetooth.service avahi-daemon.service NetworkManager.service nbt-gadget.service
+Wants=bluetooth.service avahi-daemon.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStartPre=/usr/local/sbin/nbt-bt-up.sh
+TimeoutStartSec=180
+ExecStart=/usr/bin/python3 -u /usr/local/sbin/nbt-bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -35,7 +35,8 @@ A fork of [JayJay3071/nbt-android-auto](https://github.com/JayJay3071/nbt-androi
 ## Known limitations
 
 - No wireless CarPlay: wired-to-wireless CarPlay adapters need a USB role switch the NBT cannot do
-  ([docs/WIRELESS.md](docs/WIRELESS.md)). Wireless Android Auto works through an adapter.
+  ([docs/WIRELESS.md](docs/WIRELESS.md)). Wireless Android Auto works through an adapter. A bridge board for wireless
+  CarPlay is in progress ([docs/WIRELESS-BRIDGE.md](docs/WIRELESS-BRIDGE.md)), not yet tested in the car.
 - Phone calls still go over Bluetooth, as before.
 - After changing the picture mode or the decoder, the picture comes back only after a system restart (the iDrive page
   asks for it).
@@ -69,6 +70,7 @@ Click **Save diagnostic logs** in the installer and attach the zip to a
 |---|---|
 | [docs/CARPLAY.md](docs/CARPLAY.md) | Wired CarPlay on the NBT: USB, authentication chip, iAP2, AirPlay |
 | [docs/WIRELESS.md](docs/WIRELESS.md) | Wireless adapters: what works, what does not and why |
+| [docs/WIRELESS-BRIDGE.md](docs/WIRELESS-BRIDGE.md) | Wireless CarPlay through a Radxa ZERO 3W bridge board (in progress) |
 | [docs/DECODER.md](docs/DECODER.md) | Picture path, settings files, hardware decoding, trip computer widget |
 | [docs/FORK-CHANGES.md](docs/FORK-CHANGES.md) | Controller, steering wheel, audio sources, microphone and iDrive page in detail |
 | [docs/ANDROID-AUTO.md](docs/ANDROID-AUTO.md) | Development log of the Android Auto USB and TLS bring-up |

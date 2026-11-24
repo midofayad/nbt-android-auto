@@ -163,19 +163,9 @@ def check(what, cond):
         sys.exit(1)
 
 
-def main():
-    dump, input_fifo, audio_dir = sys.argv[1:4]
-    s = socket.create_connection(("127.0.0.1", 7000))
-    r = Rtsp(s)
-
-    status, body = r.request("GET", "/info")
-    info = plistlib.loads(body)
-    disp = info["displays"][0]
-    check("/info: 1280x480 display, knob", status == 200 and disp["widthPixels"] == 1280 and
-          disp["heightPixels"] == 480 and disp["features"] == 2 and len(info["hidDevices"]) == 3)
-    check("/info: audio formats without type 102", all(f["type"] != 102 for f in info["audioFormats"]))
-    check("/info: speechMode -1 as a real (xcertplay)", info["modes"]["appStates"][1]["speechMode"] == -1)
-
+def pair(r):
+    """pair-setup (PIN 3939) and pair-verify over r; the control connection is encrypted afterwards. The shared
+    secret."""
     # pair-setup
     status, body = r.request("POST", "/pair-setup", tlv((0, b"\0"), (6, b"\1")), "application/octet-stream")
     m2 = untlv(body)
@@ -227,6 +217,24 @@ def main():
     check("pair-verify M4", untlv(body).get(6) == b"\4")
     r.cipher = Cipher2(hkdf(shared, "Control-Salt", "Control-Read-Encryption-Key"),
                        hkdf(shared, "Control-Salt", "Control-Write-Encryption-Key"))
+
+    return shared
+
+
+def main():
+    dump, input_fifo, audio_dir = sys.argv[1:4]
+    s = socket.create_connection(("127.0.0.1", 7000))
+    r = Rtsp(s)
+
+    status, body = r.request("GET", "/info")
+    info = plistlib.loads(body)
+    disp = info["displays"][0]
+    check("/info: 1280x480 display, knob", status == 200 and disp["widthPixels"] == 1280 and
+          disp["heightPixels"] == 480 and disp["features"] == 2 and len(info["hidDevices"]) == 3)
+    check("/info: audio formats without type 102", all(f["type"] != 102 for f in info["audioFormats"]))
+    check("/info: speechMode -1 as a real (xcertplay)", info["modes"]["appStates"][1]["speechMode"] == -1)
+
+    shared = pair(r)
 
     # auth-setup (fake chip: the signature is the digest, padded with a5)
     peer = X25519PrivateKey.generate()

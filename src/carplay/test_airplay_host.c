@@ -3,8 +3,11 @@
  * SPDX-License-Identifier: GPL-3.0-only
  * Copyright (C) 2026 Valentin Radu
  *
- *   test_airplay_host STATE_DIR FIFO_OR_FILE INPUT_FIFO AUDIO_DIR
+ *   test_airplay_host STATE_DIR FIFO_OR_FILE INPUT_FIFO AUDIO_DIR [wireless]
+ * wireless (scripts/carplay_wireless_test.py): the iAP2 tunnel (stream 130) is offered, and iAP2's Bluetooth link runs
+ * over the first connection to 127.0.0.1:7100 (as the bridge board's relay), with test Wi-Fi parameters.
  */
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +52,42 @@ int acp_sign(const unsigned char* challenge, unsigned clen, unsigned char* sig, 
     return 0;
 }
 
+int usb_gone(void)
+{
+    return 0;
+}
+
+static struct iap2_carplay g_cp = {"fe80::4e:42ff:fe54:1", AIRPLAY_PORT, "02:4e:42:54:00:09", 0, SOURCE_VERSION, 0, 1,
+                                   {0x11, 0x22, 0x33, 0x44, 0x55, 0x66}, "NBT-test", "secret123", 36, 2};
+
+static int relay_s = -1;
+
+static int relay_write(void* ctx, const unsigned char* b, unsigned n)
+{
+    (void)ctx;
+    return net_send(relay_s, b, (int)n) ? -1 : 0;
+}
+
+static int relay_read(void* ctx, unsigned char* b, unsigned n, unsigned ms)
+{
+    const int r = net_recv(relay_s, b, (int)n, (int)ms);
+    (void)ctx;
+    return r == -2 ? 0 : r <= 0 ? -1 : r;
+}
+
+static void* bluetooth(void* arg)
+{
+    static const struct iap2_io io = {relay_write, relay_read, 0};
+    struct net_addr peer;
+    const int ls = net_tcp_listen(7100, 0);
+    (void)arg;
+    while (ls >= 0 && !g_stop && (relay_s = net_accept(ls, &peer, 1000)) == -2) {
+    }
+    if (relay_s >= 0)
+        say("test: Bluetooth iAP2 ended: %d", iap2_run(&io, &g_cp, IAP2_BLUETOOTH));
+    return 0;
+}
+
 static void stopped(int s)
 {
     (void)s;
@@ -57,7 +96,8 @@ static void stopped(int s)
 
 int main(int argc, char** argv)
 {
-    if (argc != 5)
+    pthread_t t;
+    if (argc != 5 && !(argc == 6 && !strcmp(argv[5], "wireless")))
         return 2;
     setvbuf(stdout, 0, _IOLBF, 0);
     signal(SIGTERM, stopped);
@@ -80,6 +120,14 @@ int main(int argc, char** argv)
         return 1;
     audio_start();
     input_start();
+    if (argc == 6) {
+        g_opt.wireless = 1;
+        snprintf(g_opt.device_id, sizeof(g_opt.device_id), "%s", g_cp.mac);
+        snprintf(g_opt.bt_id, sizeof(g_opt.bt_id), "11:22:33:44:55:66");
+        g_cp.public_key = airplay_public_hex();
+        airplay_wireless(&g_cp);
+        pthread_create(&t, 0, bluetooth, 0);
+    }
     if (airplay_start(AIRPLAY_PORT))
         return 1;
     while (!g_stop)

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Valentin Radu
+[Unit]
+Description=USB network device (CDC NCM) for the NBT
+After=sys-kernel-config.mount
+Wants=sys-kernel-config.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/nbt-gadget.sh
+
+[Install]
+WantedBy=multi-user.target

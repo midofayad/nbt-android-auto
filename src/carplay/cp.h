@@ -58,6 +58,8 @@ struct cp_options {
     const char* media_out, *prompt_out;   /* A2I inputs: media, prompts (0 = none) */
     unsigned aux_source;               /* the car's main source of our media input (f6) */
     int knob_invert;
+    int wireless;                      /* --wireless: the iPhone over the bridge board (docs/WIRELESS-BRIDGE.md) */
+    char device_id[18], bt_id[18];     /* AirPlay deviceID and bluetoothIDs (wireless: the board's Wi-Fi / BT) */
 };
 extern struct cp_options g_opt;
 extern volatile int g_stop;            /* the whole program ends */
@@ -99,19 +101,31 @@ const char* ncm_address(void);                           /* our link-local IPv6 
 void ncm_counts(unsigned long long* in, unsigned long long* out);   /* frames */
 void ncm_pcap(const char* path);
 
-/* ---- cp_iap2.c (iAP2 over the carkit service) ---- */
+/* ---- cp_iap2.c: iAP2 (wired: the carkit service; wireless: Bluetooth through the board, then the AirPlay tunnel) ---- */
 
 struct iap2_carplay {
     const char* address;     /* our IPv6 address on the NCM link */
     unsigned port;           /* AirPlay */
-    const char* mac;         /* "aa:bb:cc:dd:ee:ff" */
+    const char* mac;         /* "aa:bb:cc:dd:ee:ff": the device identifier in CarPlayStartSession */
     const char* public_key;  /* hex Ed25519 */
     const char* source_version;
     unsigned ncm_interface;  /* the NCM control interface (USB host transport component) */
+    /* wireless */
+    int wireless;
+    unsigned char bt_mac[6];         /* the board's Bluetooth address (Bluetooth transport component) */
+    const char *ssid, *passphrase;   /* the board's access point */
+    unsigned channel, security;      /* security as in 5703: 2 = WPA/WPA2 */
 };
 
-struct stream;
-int iap2_run(struct stream* s, const struct iap2_carplay* cp);   /* until the link ends */
+/* the bytes of one link: write 0 / -1; read: bytes, 0 = nothing within ms, -1 = ended */
+struct iap2_io {
+    int (*write)(void* ctx, const unsigned char* b, unsigned n);
+    int (*read)(void* ctx, unsigned char* b, unsigned n, unsigned ms);
+    void* ctx;
+};
+enum { IAP2_WIRED, IAP2_BLUETOOTH, IAP2_TUNNEL };
+int iap2_run(const struct iap2_io* io, const struct iap2_carplay* cp, int mode);   /* until the link ends;
+                                                                                 0 = authenticated */
 int usb_gone(void);                                              /* cp_usb.c: the iPhone was unplugged */
 
 /* ---- cp_airplay.c ---- */
@@ -125,6 +139,11 @@ void airplay_hid(unsigned uid, const unsigned char* report, unsigned n);
 void airplay_siri(void);
 void airplay_key_frame(void);
 int airplay_connected(void);            /* the event channel is up */
+int airplay_sessions(void);             /* sessions (control connections) so far */
+int airplay_active(void);               /* a session is open */
+const char* airplay_pairing_id(void);
+unsigned long long airplay_features(void);
+void airplay_wireless(const struct iap2_carplay* cp);   /* wireless: the iAP2 tunnel (stream 130) runs iAP2 with cp */
 
 #define HID_KNOB 0x2a2a2a2bu
 #define HID_MEDIA 0x2a2a2a2cu

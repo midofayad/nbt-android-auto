@@ -8,6 +8,7 @@ controller, Siri, the car microphone, calls and the parking assistant. The progr
 GPLv3); the picture is shown by `nbt_decoder` as for Android Auto ([DECODER.md](DECODER.md)).
 
 Wireless CarPlay: not with wired-to-wireless adapters (they need a USB role switch); see [WIRELESS.md](WIRELESS.md).
+Through a bridge board (`nbt_carplay --wireless`, in progress): [WIRELESS-BRIDGE.md](WIRELESS-BRIDGE.md).
 
 ## Use
 

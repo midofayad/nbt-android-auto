@@ -200,6 +200,9 @@ static void keep_reported(unsigned session)
 #define PHONE_NORMAL 1    /* a candidate phone in its normal USB mode: has to be switched to accessory mode */
 #define PHONE_ACCESSORY 2 /* already in Android Open Accessory mode: ready for the session */
 #define PHONE_CARPLAY 3   /* an iPhone, CarPlay mode on: nbt_carplay takes it */
+#define PHONE_BRIDGE 4    /* the wireless CarPlay bridge board (docs/WIRELESS-BRIDGE.md): nbt_carplay --wireless */
+#define USB_VENDOR_LINUX 0x1d6b /* the board's USB gadget 1d6b:0104 */
+#define BRIDGE_PRODUCT 0x0104
 
 /* CarPlay mode (2026-11-23, docs/CARPLAY.md): with nbt_carplay in the runtime directory, decoder mode and no
  * carplay.off, an Apple device is a candidate too; otherwise Apple devices are left alone as before */
@@ -295,12 +298,17 @@ static int find_phone(int* bus, int* device)
         unsigned c = cls[i];
         if (!u->v || !u->p || u->v == USB_VENDOR_PEIKER || (u->v == USB_VENDOR_APPLE && !g_carplay))
             continue;
-        /* audio, communication, HID, mass storage, hub, video */
-        if (c == 0x01 || c == 0x02 || c == 0x03 || c == 0x08 || c == 0x09 || c == 0x0e)
+        /* audio, communication, HID, mass storage, hub, video (not the bridge board, whatever its class) */
+        if ((c == 0x01 || c == 0x02 || c == 0x03 || c == 0x08 || c == 0x09 || c == 0x0e) &&
+            !(u->v == USB_VENDOR_LINUX && u->p == BRIDGE_PRODUCT))
             continue;
         if (u->v == USB_VENDOR_APPLE) {
             if (!ignored(u))
                 type = PHONE_CARPLAY;
+        } else if (u->v == USB_VENDOR_LINUX && u->p == BRIDGE_PRODUCT) {
+            if (!g_carplay)
+                continue;
+            type = PHONE_BRIDGE;
         } else if (u->v == USB_VENDOR_GOOGLE && (u->p == AOA_PRODUCT_ACCESSORY || u->p == AOA_PRODUCT_ACCESSORY_ADB))
             type = PHONE_ACCESSORY;
         else if (!ignored(u))
@@ -312,7 +320,7 @@ static int find_phone(int* bus, int* device)
         *bus = u->bus;
         *device = u->addr;
         result = type;
-        if (type == PHONE_NORMAL || type == PHONE_CARPLAY) {
+        if (type == PHONE_NORMAL || type == PHONE_CARPLAY || type == PHONE_BRIDGE) {
             found_v = u->v;
             found_p = u->p;
         } else
@@ -876,8 +884,8 @@ int main(int argc, char** argv)
         /* An iPhone (CarPlay mode): nbt_carplay does everything itself (USB configuration, pairing, iAP2, AirPlay)
          * and writes the picture into annexb.fifo for nbt_decoder, as oneplus_native does; it ends when the iPhone is
          * unplugged or the session fails. Three short runs in a row: the iPhone is left alone until it is unplugged. */
-        if (type == PHONE_CARPLAY) {
-            char* args[] = {"./nbt_carplay", 0};
+        if (type == PHONE_CARPLAY || type == PHONE_BRIDGE) {
+            char* args[] = {"./nbt_carplay", 0, 0};
             char cpname[40];
             long long began;
             ++session;
@@ -888,6 +896,8 @@ int main(int argc, char** argv)
                 continue;
             }
             snprintf(cpname, sizeof(cpname), "carplay-%u.log", session);
+            if (type == PHONE_BRIDGE)   /* waits for iPhones over the board, one session per run */
+                args[1] = "--wireless";
             unlink("/fs/ram3/nbt-aa-media");
             setenv("LD_LIBRARY_PATH", SYSTEM_LIBRARY_PATH, 1);
             carplay = spawn(args, 0, cpname);
@@ -900,6 +910,11 @@ int main(int argc, char** argv)
             }
             report("draining", session);
             end(&carplay);
+            if (type == PHONE_BRIDGE) {
+                if (!stopping)
+                    sleep(2);
+                continue;
+            }
             if (ms() - began >= 60000)
                 carplay_failures = 0;
             else if (++carplay_failures >= 3) {

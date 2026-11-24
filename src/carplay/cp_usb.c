@@ -20,6 +20,9 @@
  * one device are ended (pidin arg, SIGTERM, then SIGKILL) and the attachment is tried again. After the CarPlay request
  * the iPhone re-connects and the launcher starts new handlers, which leave the multiplexor and NCM interfaces to us
  * (as on every run so far).
+ *
+ * Wireless (--wireless, docs/WIRELESS-BRIDGE.md): instead of an iPhone the bridge board's USB gadget 1d6b:0104, one
+ * configuration with one NCM function and nothing else; its NCM function is opened the same way.
  */
 #include <sys/usbdi.h>
 #include <errno.h>
@@ -33,6 +36,8 @@
 #include "cp_usb.h"
 
 #define APPLE 0x05ac
+#define BRIDGE_VENDOR 0x1d6b   /* the board's gadget (Linux Foundation, multifunction composite gadget) */
+#define BRIDGE_PRODUCT 0x0104
 
 static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 static usbd_device_instance_t g_inst[64];
@@ -86,8 +91,10 @@ static int connect_stack(struct usb* u)
     int rc;
     memset(&parm, 0, sizeof(parm));
     memset(&funcs, 0, sizeof(funcs));
-    ident.vendor = APPLE;
+    ident.vendor = g_opt.wireless ? BRIDGE_VENDOR : APPLE;
     ident.device = ident.dclass = ident.subclass = ident.protocol = USBD_CONNECT_WILDCARD;
+    if (g_opt.wireless)
+        ident.device = BRIDGE_PRODUCT;
     funcs.nentries = _USBDI_NFUNCS;
     funcs.insertion = inserted;
     funcs.removal = removed;
@@ -257,6 +264,34 @@ static int find_carplay(struct usb* u, struct usbd_device* dev)
     return found ? 0 : -1;
 }
 
+/* the bridge board: the first configuration with an NCM function, its control and data interfaces */
+static int find_ncm(struct usb* u, struct usbd_device* dev)
+{
+    struct usbd_desc_node* node;
+    unsigned cfg, ifc;
+    for (cfg = 1; cfg <= 4; ++cfg) {
+        unsigned ctrl = 99, data = 99;
+        if (!usbd_configuration_descriptor(dev, (unsigned char)cfg, &node))
+            continue;
+        for (ifc = 0; ifc < 8; ++ifc) {
+            usbd_interface_descriptor_t* i = usbd_interface_descriptor(dev, (unsigned char)cfg, (unsigned char)ifc, 0, &node);
+            if (!i)
+                continue;
+            if (i->bInterfaceClass == 0x02 && i->bInterfaceSubClass == 0x0d && ctrl == 99)
+                ctrl = ifc;
+            if (i->bInterfaceClass == 0x0a && ctrl != 99 && data == 99 && ifc == ctrl + 1)
+                data = ifc;
+        }
+        if (ctrl != 99 && data != 99) {
+            u->cfg = cfg;
+            u->ncm_ctrl = ctrl;
+            u->ncm_data = data;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 /* the bulk endpoints of an interface's alternate setting into p_in / p_out */
 static int open_bulk(struct usbd_device* dev, unsigned cfg, unsigned ifc, unsigned alt, struct usb_pipe* p_in,
                      struct usb_pipe* p_out, unsigned size)
@@ -364,7 +399,8 @@ static void ncm_notifications(struct usb* u)
     struct usbd_desc_node *in_node, *ep_node;
     usbd_descriptors_t* e;
     int k, rc;
-    u->ncm_ctrl_dev = attach(u, 0, u->cfg, u->ncm_ctrl, 0);
+    if (!u->ncm_ctrl_dev)
+        u->ncm_ctrl_dev = attach(u, 0, u->cfg, u->ncm_ctrl, 0);
     if (!u->ncm_ctrl_dev ||
         !usbd_interface_descriptor(u->ncm_ctrl_dev, (unsigned char)u->cfg, (unsigned char)u->ncm_ctrl, 0, &in_node))
         return;
@@ -416,6 +452,72 @@ static void read_mac(struct usb* u, struct usbd_device* dev)
     say("usb: no NCM MAC address in the descriptors");
 }
 
+/* the NCM data interface's alternate setting 1 and its pipes, our MAC address; the device is ours from now on */
+static int ncm_open(struct usb* u)
+{
+    int rc;
+    u->ncm_alt = 1;
+    rc = usbd_select_interface(u->ncm_dev, (unsigned char)u->ncm_data, (unsigned char)u->ncm_alt);
+    say("usb: NCM data interface %u alternate %u: %s", u->ncm_data, u->ncm_alt, rc == EOK ? "OK" : strerror(rc));
+    if (rc != EOK || open_bulk(u->ncm_dev, u->cfg, u->ncm_data, u->ncm_alt, &u->ncm_in, &u->ncm_out, u->ntb_in + 2048))
+        return -1;
+    if (!u->have_mac) {   /* our own, locally administered */
+        cp_random(u->mac, 6);
+        u->mac[0] = (unsigned char)((u->mac[0] & 0xfe) | 0x02);
+    }
+    g_armed = 1;
+    return 0;
+}
+
+static int usb_open_bridge(struct usb* u, unsigned wait_s)
+{
+    struct usbd_device* dev = 0;
+    usbd_device_instance_t used;
+    unsigned before, tries;
+    int rc;
+    say("usb: waiting up to %u s for the bridge board", wait_s);
+    if (wait_for(0, wait_s)) {
+        say("usb: no bridge board");
+        return -1;
+    }
+    for (tries = 0; tries < 30 && !g_stop && !(dev = attach(u, 0, ~0u, ~0u, &used)); ++tries)
+        usleep(200000);
+    if (!dev) {
+        say("usb: every interface of the bridge board is held");
+        return -1;
+    }
+    if (find_ncm(u, dev)) {
+        say("usb: the bridge board has no NCM function");
+        return -1;
+    }
+    say("usb: bridge board: configuration %u, NCM interfaces %u / %u", u->cfg, u->ncm_ctrl, u->ncm_data);
+    read_mac(u, dev);
+    if (used.config != u->cfg) {
+        before = count();
+        rc = usbd_select_config(dev, (unsigned char)u->cfg);
+        say("usb: select configuration %u: %s", u->cfg, rc == EOK ? "OK" : strerror(rc));
+        if (wait_for(before, 3)) {
+            usbd_disconnect(u->conn);
+            dev = 0;
+            if (connect_stack(u) || wait_for(0, 5))
+                return -1;
+        }
+    }
+    if (dev && used.config == u->cfg && used.iface == u->ncm_data)
+        u->ncm_dev = dev;
+    else if (dev && used.config == u->cfg && used.iface == u->ncm_ctrl)
+        u->ncm_ctrl_dev = dev;
+    for (tries = 0; tries < 30 && !u->ncm_dev && !(u->ncm_dev = attach(u, 0, u->cfg, u->ncm_data, 0)); ++tries)
+        usleep(200000);
+    if (!u->ncm_dev) {
+        say("usb: the NCM data interface %u is not there (held by another driver?)", u->ncm_data);
+        return -1;
+    }
+    ncm_parameters(u, u->ncm_dev);
+    ncm_notifications(u);
+    return ncm_open(u);
+}
+
 int usb_open(struct usb* u, unsigned wait_s)
 {
     struct usbd_device* dev;
@@ -425,6 +527,8 @@ int usb_open(struct usb* u, unsigned wait_s)
     memset(u, 0, sizeof(*u));
     if (connect_stack(u))
         return -1;
+    if (g_opt.wireless)
+        return usb_open_bridge(u, wait_s);
     say("usb: waiting up to %u s for an iPhone", wait_s);
     if (wait_for(0, wait_s)) {
         say("usb: no iPhone");
@@ -491,17 +595,7 @@ int usb_open(struct usb* u, unsigned wait_s)
     }
     ncm_parameters(u, u->mux_dev);
     ncm_notifications(u);
-    u->ncm_alt = 1;
-    rc = usbd_select_interface(u->ncm_dev, (unsigned char)u->ncm_data, (unsigned char)u->ncm_alt);
-    say("usb: NCM data interface %u alternate %u: %s", u->ncm_data, u->ncm_alt, rc == EOK ? "OK" : strerror(rc));
-    if (rc != EOK || open_bulk(u->ncm_dev, u->cfg, u->ncm_data, u->ncm_alt, &u->ncm_in, &u->ncm_out, u->ntb_in + 2048))
-        return -1;
-    if (!u->have_mac) {   /* our own, locally administered */
-        cp_random(u->mac, 6);
-        u->mac[0] = (unsigned char)((u->mac[0] & 0xfe) | 0x02);
-    }
-    g_armed = 1;
-    return 0;
+    return ncm_open(u);
 }
 
 static void done(struct usbd_urb* urb, struct usbd_pipe* pipe, void* arg)

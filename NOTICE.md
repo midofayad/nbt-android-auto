@@ -118,7 +118,9 @@ permission below. They contain no code from NBT-AAD or the rest of this project:
   generator `scripts/gen_panel_font.py`
 - `src/idrive/reboot/nbt_reset.c`
 - the CarPlay work: everything in `src/carplay/` (`nbt_carplay`, its parts and host tests, `lwip_port/`, the probe),
-  `docs/CARPLAY.md`, `scripts/mbedtls_empty_name.py`, `scripts/carplay_deps.py`, `scripts/carplay_test.py`
+  `docs/CARPLAY.md`, `scripts/mbedtls_empty_name.py`, `scripts/carplay_deps.py`, `scripts/carplay_test.py`,
+  `scripts/carplay_wireless_test.py`
+- the wireless CarPlay bridge board: everything in `radxa/`, `docs/WIRELESS-BRIDGE.md`
 - `docs/DECODER.md`, `docs/FORK-CHANGES.md`, `docs/WORKFLOW.md`, `docs/SSH-ACCESS-SERIAL.md`, `docs/WIRELESS.md`
 
 The other files in `src/android_auto/decoder/ffmpeg/` (`config.h`, `config.asm`, `avconfig.h`, `ffversion.h`) are
