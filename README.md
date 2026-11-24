@@ -2,7 +2,8 @@
 
 Wired **Android Auto** and **Apple CarPlay** for the **original BMW NBT** head unit (F-series iDrive, 2013–2016,
 QNX 6.5 on x86). No adapter and no extra hardware: the phone plugs into the NBT's own USB port, the picture runs
-through the car's video path, the sound plays through the car, and the iDrive controller does the rest.
+through the car's video path, the sound plays through the car, and the iDrive controller does the rest. Wireless
+works too: Android Auto through a wired-to-wireless adapter, CarPlay through a small Linux board on the USB port.
 
 **Not** for NBT Evo, CIC or later iDrive generations.
 
@@ -29,15 +30,14 @@ A fork of [JayJay3071/nbt-android-auto](https://github.com/JayJay3071/nbt-androi
 | **Trip computer widget** | A small box over the picture with trip and car data; long NAV switches pages or hides it |
 | **Parking assistant** | The phone's screen steps aside for park distance control and comes back when it closes |
 | **iDrive page** | *Multimedia → CarPlay / Android Auto*: status, start at boot, picture and decoder settings, widget size, **Restart service**, **Restart system** |
+| **Wireless CarPlay** | Through a small Linux board on the USB port (Radxa ZERO 3W) that brings the Bluetooth and Wi-Fi; picture, sound, controller and microphone as over USB ([docs/WIRELESS-BRIDGE.md](docs/WIRELESS-BRIDGE.md)) |
 | **Wireless Android Auto** | With a wired-to-wireless adapter on the USB port (tested: E-Boda AA30) ([docs/WIRELESS.md](docs/WIRELESS.md)) |
 | **Recovers by itself** | Unplug and replug, ignition off and on, service restarts: the session comes back without a reboot |
 
 ## Known limitations
 
-- No wireless CarPlay: wired-to-wireless CarPlay adapters need a USB role switch the NBT cannot do
-  ([docs/WIRELESS.md](docs/WIRELESS.md)). Wireless Android Auto works through an adapter. Wireless CarPlay through a
-  bridge board is in progress ([docs/WIRELESS-BRIDGE.md](docs/WIRELESS-BRIDGE.md)): picture and controls work in the
-  car, sound is being tested.
+- Off-the-shelf wired-to-wireless CarPlay adapters do not work: they need a USB role switch the NBT cannot do
+  ([docs/WIRELESS.md](docs/WIRELESS.md)). Wireless CarPlay needs the bridge board instead.
 - Phone calls still go over Bluetooth, as before.
 - After changing the picture mode or the decoder, the picture comes back only after a system restart (the iDrive page
   asks for it).
@@ -71,7 +71,7 @@ Click **Save diagnostic logs** in the installer and attach the zip to a
 |---|---|
 | [docs/CARPLAY.md](docs/CARPLAY.md) | Wired CarPlay on the NBT: USB, authentication chip, iAP2, AirPlay |
 | [docs/WIRELESS.md](docs/WIRELESS.md) | Wireless adapters: what works, what does not and why |
-| [docs/WIRELESS-BRIDGE.md](docs/WIRELESS-BRIDGE.md) | Wireless CarPlay through a Radxa ZERO 3W bridge board (in progress) |
+| [docs/WIRELESS-BRIDGE.md](docs/WIRELESS-BRIDGE.md) | Wireless CarPlay through a Radxa ZERO 3W bridge board |
 | [docs/DECODER.md](docs/DECODER.md) | Picture path, settings files, hardware decoding, trip computer widget |
 | [docs/FORK-CHANGES.md](docs/FORK-CHANGES.md) | Controller, steering wheel, audio sources, microphone and iDrive page in detail |
 | [docs/ANDROID-AUTO.md](docs/ANDROID-AUTO.md) | Development log of the Android Auto USB and TLS bring-up |

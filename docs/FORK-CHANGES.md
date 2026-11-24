@@ -119,9 +119,10 @@ The phone's playing / paused state comes from the session: a small NBT-AAD core 
   a wireless Android Auto adapter does that while it connects the phone (2026-11-24, [WIRELESS.md](WIRELESS.md)).
 - **Phone certificate:** any certificate from the phone is accepted, logged in the session log (2026-11-24: a
   wireless adapter sends one that expired in 2022).
-- **Wireless CarPlay bridge (in progress, 2026-11-24):** a Radxa ZERO 3W on the USB port (1d6b:0104) starts
-  `nbt_carplay --wireless`; the board relays the iPhone's Bluetooth iAP2 and bridges its access point to the NBT
-  ([WIRELESS-BRIDGE.md](WIRELESS-BRIDGE.md)).
+- **Wireless CarPlay (2026-11-24):** a Radxa ZERO 3W on the USB port (1d6b:0104) starts `nbt_carplay --wireless`;
+  the board relays the iPhone's Bluetooth iAP2 and bridges its access point to the NBT; sound over Wi-Fi as AAC-LC /
+  Opus (FAAD2, libopus) ([WIRELESS-BRIDGE.md](WIRELESS-BRIDGE.md)).
+- **CarPlay pause:** a pause on the wheel or controller drops the music already queued, so it stops when pressed.
 - **Service log:** native_service writes to `/fs/ram3/nbt-aa-native/native.log` (before: nowhere), also in the
   installer's diagnostic zip.
 - **Service restarts:** `nbt_decoder` outlives them (its car stream works once per boot); when it has to be started

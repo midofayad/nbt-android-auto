@@ -3,14 +3,14 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Valentin Radu -->
 
-Status (2026-11-24, in the car with an iPhone 15 Pro Max on iOS 17): Bluetooth iAP2, authentication with the car's 2.0B
-chip, the iPhone joining the board's access point, AirPlay pairing and the picture (about 30 fps) work. Sound over
-Wi-Fi (AAC-LC / Opus decoding, below) is host-tested, not yet tried in the car.
+Status (2026-11-24, in the car with an iPhone 15 Pro Max on iOS 17): wireless CarPlay works. Bluetooth pairing from the
+iPhone, iAP2 over Bluetooth with the car's 2.0B authentication chip, the iPhone joining the board's access point,
+AirPlay, the picture (about 30 fps), touch / controller and sound (AAC-LC / Opus, below).
 
 The NBT does CarPlay itself, as with the cable (`nbt_carplay`: iAP2 with the car's own Apple authentication chip, the
 AirPlay receiver, picture, sound, controller). A small Linux board on the NBT's USB port does what the NBT cannot: the
 Bluetooth and the 5 GHz access point the iPhone needs for wireless CarPlay. Tested board: Radxa ZERO 3W (RK3566,
-AIC8800 Wi-Fi / Bluetooth, Radxa OS / Debian 12).
+AIC8800 Wi-Fi / Bluetooth) with Radxa OS (Debian 12 bookworm, kernel 6.1).
 
 ```
 iPhone --Bluetooth RFCOMM (iAP2)--> board: nbt-bridge.py --TCP over USB NCM--> nbt_carplay --wireless (NBT)
@@ -45,24 +45,35 @@ iPhone --Wi-Fi (board's access point)--> br0 bridge --usb0 (NCM)--> nbt_carplay'
 
 ## Setting up the board
 
-Everything goes over the SD card's FAT partition (the board needs no internet). Packages it needs (`nbt-setup.sh`
-checks them first): `python3`, `bluez` (`bluetoothctl`, `sdptool`), `avahi-daemon`, `avahi-utils`, NetworkManager with
-`dnsmasq-base`.
+Tested with the stock image `radxa-zero3_bookworm_kde_b1.output_512.img.xz` (Radxa OS, Debian 12 bookworm, kernel
+6.1.84; user `rock`, password `rock`). The board needs no internet: the only package missing from the image is
+`avahi-utils`, copied over as a file
+([avahi-utils_0.8-10+deb12u1_arm64.deb](http://ftp.us.debian.org/debian/pool/main/a/avahi/avahi-utils_0.8-10+deb12u1_arm64.deb),
+the same version as the image's `libavahi-client3`).
 
-1. Copy the folder [radxa/](../radxa/) to the FAT partition (its mount point: `findmnt -t vfat`).
-2. `sudo sh <mount point>/radxa/nbt-setup.sh` (optional: `... nbt-setup.sh NAME PASSPHRASE` for the access point;
-   default `NBT-CarPlay` and a random passphrase, kept in `/etc/nbt-bridge.conf`)
-3. On the iPhone: Settings → Bluetooth → "BMW NBT" → Pair. The board accepts and trusts it by itself
+1. `sudo dpkg -i avahi-utils_0.8-10+deb12u1_arm64.deb`
+2. Put the files of [radxa/](../radxa/) into `/home/rock/nbt` (for example from the SD card's FAT partition; with LF
+   line ends).
+3. `sudo sh /home/rock/nbt/nbt-setup.sh` (optional: `... nbt-setup.sh NAME PASSPHRASE` for the access point; default
+   `NBT-CarPlay` and a random passphrase, kept in `/etc/nbt-bridge.conf` and reused when run again)
+4. `sudo reboot`
+5. On the iPhone: Settings → Bluetooth → the board's name → Pair. The board accepts and trusts it by itself
    (`journalctl -u nbt-bridge` shows "paired with ..." and the iPhone's iAP2 RFCOMM channel).
 
-`nbt-setup.sh` installs the scripts and services, sets Bluetooth up as a car in `/etc/bluetooth/main.conf` (name
-"BMW NBT", car audio class 0x200420, discoverable and pairable without time limit; the original is kept as
-`main.conf.nbt-orig`), starts the USB gadget, runs `nbt-net.sh` (bridge br0 = usb0 + the 5 GHz access point) and starts
-`nbt-bridge`, whose bluetoothctl agent accepts every pairing. Before it starts, `nbt-bt-up.sh` resets the AIC8800 Bluetooth
-again if Radxa's boot-time reset (`rsetup-aic8800-reset@ttyS1`) left no controller (it sometimes fails). Run it again after changing the files.
+That is the whole setup. `nbt-setup.sh` checks the tools it needs (`python3` with Bluetooth sockets, `bluetoothctl`,
+`sdptool`, `avahi-daemon`, `avahi-publish`, `avahi-browse`, `nmcli`, `dnsmasq`), installs the scripts and services,
+sets Bluetooth up in `/etc/bluetooth/main.conf` (car audio class 0x200420, discoverable and pairable without time
+limit; the original is kept as `main.conf.nbt-orig`), runs bluetoothd with `--compat` and without A2DP / AVRCP,
+disables PipeWire / WirePlumber, starts the USB gadget, runs `nbt-net.sh` (bridge br0 = usb0 + the 5 GHz access point)
+and starts `nbt-bridge`, whose bluetoothctl agent accepts every pairing. Before it starts, `nbt-bt-up.sh` resets the
+AIC8800 Bluetooth again if Radxa's boot-time reset (`rsetup-aic8800-reset@ttyS1`) left no controller (it sometimes
+fails). Run it again after changing the files.
+
+The board's Bluetooth name is its host name (`radxa-zero3` on the stock image): BlueZ's host name plugin takes
+precedence over the `Name` that `nbt-setup.sh` writes into `main.conf`. Change it with `sudo hostnamectl hostname NAME`.
 
 The board is powered by the NBT through its OTG port (the USB-C port marked OTG); its other USB-C port stays free.
-Debugging over its serial console: pins 6 (GND), 8 (TX), 10 (RX), 1500000 baud.
+Serial console (as used for all of this): pins 6 (GND), 8 (TX), 10 (RX), 1500000 baud, 8N1, no flow control.
 
 ## Logs
 
@@ -76,7 +87,10 @@ Over Wi-Fi the iPhone does not use LPCM: with only LPCM offered it set up no aud
 wireless table, `nbt_carplay --wireless` offers media as AAC-LC 44.1 / 48 kHz stereo on stream 102 and the rest as
 Opus mono (Siri 24 / 48 kHz, navigation and alerts 48 kHz, telephony 16 / 24 / 48 kHz), and the microphone as Opus
 16 kHz. `cp_codec.c` decodes with FAAD2 and libopus and encodes the microphone with libopus; the decoded sound goes the
-same way as the cable's.
+same way as the cable's. In the car: music (AAC-LC 44.1 kHz) and the rest play. `nbt_carplay` holds about 0.2-0.4 s
+of media in its queue (the iPhone sends bursts at the start); the rest of the delay before music starts is the
+iPhone's own and the car's output. A pause key while music plays drops the queued music and ignores what arrives in
+the next 0.7 s, so the music stops when the key is pressed (otherwise about 0.5 s later).
 
 The board must not take the iPhone's Bluetooth audio: `nbt-setup.sh` runs bluetoothd without its A2DP / AVRCP plugins
 and disables PipeWire / WirePlumber (with them, the trusted iPhone sent its sound to the board).

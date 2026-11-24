@@ -3,8 +3,8 @@
 # Copyright (C) 2026 Valentin Radu
 #
 # Sets up the bridge board for wireless CarPlay (docs/WIRELESS-BRIDGE.md), from the folder this script is in (for
-# example the SD card's FAT partition): checks the tools, installs the scripts and services, makes Bluetooth a car
-# ("BMW NBT", car audio class, always discoverable and pairable), the USB gadget, the bridge and access point
+# example /home/rock/nbt): checks the tools, installs the scripts and services, makes Bluetooth a car (car audio
+# class, always discoverable and pairable; its name stays the host name), the USB gadget, the bridge and access point
 # (nbt-net.sh), and starts everything. Safe to run again.
 #   sudo sh nbt-setup.sh [SSID [PASSPHRASE]]
 set -e
@@ -54,4 +54,4 @@ systemctl restart nbt-bridge
 sleep 5
 systemctl --no-pager status nbt-gadget nbt-bridge | grep -e "●" -e Active
 journalctl -u nbt-bridge --no-pager -n 10
-echo "nbt-setup: done. Reboot, then pair the iPhone: Settings > Bluetooth > BMW NBT."
+echo "nbt-setup: done. Reboot, then pair the iPhone: Settings > Bluetooth > $(hostname) (the board's host name)."

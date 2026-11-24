@@ -86,7 +86,7 @@ was not checked. xcertplay and LIVI do it this way on Android and Linux boards, 
 A plain USB Wi-Fi stick through a hub would not help: QNX 6.5 has no driver that runs a 5 GHz access point. A small
 Linux board in USB device mode (Radxa ZERO 3W) can do the Wi-Fi and Bluetooth part and forward it to the NBT over a
 USB network link (CDC NCM, as `nbt_carplay` already uses); the car's own Apple chip still does the authentication.
-This is in progress: [WIRELESS-BRIDGE.md](WIRELESS-BRIDGE.md).
+This works: [WIRELESS-BRIDGE.md](WIRELESS-BRIDGE.md).
 
 ## Logs
 

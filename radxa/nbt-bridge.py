@@ -19,7 +19,7 @@ Bluetooth service records (as head units with wireless CarPlay): the accessory's
 (d31fbf50-5d57-2797-a240-41cd484388ec); the iPhone reads them when it pairs and only then counts the board as a car.
 They are registered over bluetoothd's local SDP socket (/run/sdp, bluetoothd --compat, from nbt-setup.sh) and stay
 while that connection is open.
-Pairing: the board is always discoverable ("BMW NBT", car audio class, from nbt-setup.sh) and bluetoothctl runs here
+Pairing: the board is always discoverable (as its host name, car audio class, from nbt-setup.sh) and bluetoothctl runs here
 in a pseudo-terminal as the pairing agent: every pairing request is accepted and every newly paired device trusted, so
 an iPhone pairs from its Bluetooth settings like with a car. Its Bluetooth audio and other services (hands-free, media
 control, A2DP) are refused: the sound goes through CarPlay to the NBT. When pairing keeps failing (after "Forget This
