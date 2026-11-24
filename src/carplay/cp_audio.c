@@ -124,6 +124,9 @@ struct stream {
     /* resampling */
     int prev_l, prev_r;
     unsigned pos;
+    /* timestamps: the jumps mark a new track (and are logged) */
+    unsigned last_ts, last_seq;
+    int last_delta, have_last, jumps_logged, control_logged;
     /* feedback */
     int started;
     unsigned first_sample;
@@ -139,9 +142,11 @@ volatile int audio_playing;
 /* After a pause key the queued music would play on (0.2-0.4 s, plus the car's output), and the iPhone still sends a
  * little after it paused (car 2026-11-24: a short burst after the pause). So: the queue is dropped and arriving media
  * ignored until the iPhone plays again (NowPlaying after it reported the pause, or a play key); if it does not report
- * the pause within 1.5 s (the key did not pause), media is taken again. The same after next / previous: until
- * NowPlaying reports the new track (title, queue index, elapsed time near 0), at most 1.5 s. Ignored packets are
- * counted in the log. */
+ * the pause within 1.5 s (the key did not pause), media is taken again (the iPhone also sends FLUSH on a pause).
+ * After next / previous: no request comes (car 2026-11-24), NowPlaying reports the new track after 0.6 s while the old
+ * one still arrives: stream 102 is buffered audio (audioLatencyMs 1000), sent up to a second ahead. So the quiet ends
+ * at the first jump in the RTP timestamps (the new track's audio), at most 2.5 s. Ignored packets are counted in the
+ * log; timestamp jumps, marker bits and control port packets are logged too. */
 enum { QUIET_PAUSE = 1, QUIET_SKIP };
 static struct {
     int on, saw_paused;
@@ -190,10 +195,8 @@ void audio_media_resume(void)
 
 void audio_track_changed(void)
 {
-    pthread_mutex_lock(&g_m);
     if (g_quiet.on == QUIET_SKIP)
-        quiet_end("new track reported");
-    pthread_mutex_unlock(&g_m);
+        say("audio: new track reported (%lld ms after the key)", ms_now() - g_quiet.since);
 }
 
 void audio_set_playing(int playing)
@@ -212,8 +215,8 @@ static int media_quiet(void)
 {
     if (g_quiet.on == QUIET_PAUSE && !g_quiet.saw_paused && ms_now() - g_quiet.since > 1500)
         quiet_end("no pause reported");
-    else if (g_quiet.on == QUIET_SKIP && ms_now() - g_quiet.since > 1500)
-        quiet_end("no new track reported");
+    else if (g_quiet.on == QUIET_SKIP && ms_now() - g_quiet.since > 2500)
+        quiet_end("no timestamp jump within 2.5 s");
     if (g_quiet.on)
         ++g_quiet.ignored;
     return g_quiet.on;
@@ -280,6 +283,33 @@ static void* stream_thread(void* arg)
         }
         m -= 16;
         ++s->packets;
+        {   /* timestamp jumps, the marker bit, the control port */
+            const unsigned ts = get32(p + 4), seq = get16(p + 2);
+            const int d = (int)(ts - s->last_ts), marker = p[1] & 0x80;
+            const unsigned lost = (seq - s->last_seq) & 0xffff;   /* 1 = the next packet */
+            unsigned char c[256];
+            int cn;
+            if (s->have_last && lost > 1 && lost < 100 && d == s->last_delta * (int)lost) {
+                if (s->jumps_logged++ < 200)
+                    say("audio %d: %u packet(s) lost", s->type, lost - 1);
+            } else if (s->have_last && ((s->last_delta && d != s->last_delta) || marker)) {
+                if (s->jumps_logged++ < 200)
+                    say("audio %d: timestamp %u -> %u (%+d, usual %+d), sequence %u -> %u%s", s->type, s->last_ts, ts, d,
+                        s->last_delta, s->last_seq, seq, marker ? ", marker" : "");
+                if (s->queue == Q_MEDIA && d != s->last_delta) {
+                    pthread_mutex_lock(&g_m);
+                    if (g_quiet.on == QUIET_SKIP)
+                        quiet_end("timestamp jump (the new track)");
+                    pthread_mutex_unlock(&g_m);
+                }
+            } else if (s->have_last && !s->last_delta)
+                s->last_delta = d;
+            s->last_ts = ts;
+            s->last_seq = seq;
+            s->have_last = 1;
+            if ((cn = net_recvfrom(s->control, c, sizeof(c), 1, &from)) > 0 && s->control_logged++ < 30)
+                say("audio %d: control packet %02x %02x, %d bytes", s->type, c[0], c[1], cn);
+        }
         if (!s->started) {
             s->started = 1;
             s->first_sample = get32(p + 4);
