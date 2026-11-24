@@ -370,7 +370,7 @@ static void now_playing(struct link* l, const unsigned char* p, unsigned n)
     if (!g || !(st = prm_find(g, len, 0, &l2)) || l2 < 1)
         return;
     say("%s: playback state %u", l->name, st[0]);
-    audio_playing = st[0] == 1;
+    audio_set_playing(st[0] == 1);
     flag_set("/fs/ram3/nbt-aa-media", st[0] == 1 ? "2\n" : "3\n");
 }
 

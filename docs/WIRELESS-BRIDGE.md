@@ -89,8 +89,9 @@ Opus mono (Siri 24 / 48 kHz, navigation and alerts 48 kHz, telephony 16 / 24 / 4
 16 kHz. `cp_codec.c` decodes with FAAD2 and libopus and encodes the microphone with libopus; the decoded sound goes the
 same way as the cable's. In the car: music (AAC-LC 44.1 kHz) and the rest play. `nbt_carplay` holds about 0.2-0.4 s
 of media in its queue (the iPhone sends bursts at the start); the rest of the delay before music starts is the
-iPhone's own and the car's output. A pause key while music plays drops the queued music and ignores what arrives in
-the next 0.7 s, so the music stops when the key is pressed (otherwise about 0.5 s later).
+iPhone's own and the car's output. A pause key while music plays drops the queued music and ignores what still arrives
+until the iPhone plays again (it sends a short burst after it paused), so the music stops when the key is pressed
+(otherwise about 0.5 s later).
 
 The board must not take the iPhone's Bluetooth audio: `nbt-setup.sh` runs bluetoothd without its A2DP / AVRCP plugins
 and disables PipeWire / WirePlumber (with them, the trusted iPhone sent its sound to the board).
