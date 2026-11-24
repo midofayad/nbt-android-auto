@@ -91,9 +91,11 @@ same way as the cable's. In the car: music (AAC-LC 44.1 kHz) and the rest play. 
 of media in its queue (the iPhone sends bursts at the start); the rest of the delay before music starts is the
 iPhone's own and the car's output. A pause key while music plays drops the queued music and ignores what still arrives
 until the iPhone plays again (it sends a short burst after it paused), so the music stops when the key is pressed
-(otherwise about 0.5 s later). Next / previous while music plays: the same until the new track's audio, recognised by
-the jump in the RTP timestamps (at most 2.5 s): stream 102 is buffered audio (`audioLatencyMs` 1000), the iPhone sends
-up to a second ahead, and NowPlaying reports the new track after about 0.6 s while the old one still arrives.
+(otherwise about 0.5 s later). Next / previous while music plays: the same for 1 s. Stream 102 is buffered audio
+(`audioLatencyMs` 1000, sent that far ahead), nothing in the stream marks the new track (timestamps run on, no marker,
+no request), NowPlaying reports it after about 0.6 s while the old one still arrives, and 2.5 s cut the new one's
+start. For tuning: `echo 900 > /fs/ram3/nbt-cp-skip-ms` (milliseconds, 100-3000, read at each key, gone after a
+reboot).
 
 The board must not take the iPhone's Bluetooth audio: `nbt-setup.sh` runs bluetoothd without its A2DP / AVRCP plugins
 and disables PipeWire / WirePlumber (with them, the trusted iPhone sent its sound to the board).

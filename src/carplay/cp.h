@@ -174,7 +174,7 @@ void audio_set_playing(int playing); /* cp_iap2.c, from NowPlaying */
 void audio_media_pause(void);        /* a pause key: queued media dropped, arriving media ignored until playing again */
 void audio_media_resume(void);       /* a play key: media taken again at once */
 void audio_media_skip(void);         /* next / previous while playing: queued media dropped, arriving media ignored
-                                        until the stream's timestamps jump (the new track), at most 2.5 s */
+                                        for the iPhone's audio lead (1 s, or /fs/ram3/nbt-cp-skip-ms) */
 void audio_track_changed(void);      /* cp_iap2.c: NowPlaying reports another track */
 struct decoder;
 struct decoder* decoder_open(int codec, int rate, int channels);

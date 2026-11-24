@@ -143,15 +143,18 @@ volatile int audio_playing;
  * little after it paused (car 2026-11-24: a short burst after the pause). So: the queue is dropped and arriving media
  * ignored until the iPhone plays again (NowPlaying after it reported the pause, or a play key); if it does not report
  * the pause within 1.5 s (the key did not pause), media is taken again (the iPhone also sends FLUSH on a pause).
- * After next / previous: no request comes (car 2026-11-24), NowPlaying reports the new track after 0.6 s while the old
- * one still arrives: stream 102 is buffered audio (audioLatencyMs 1000), sent up to a second ahead. So the quiet ends
- * at the first jump in the RTP timestamps (the new track's audio), at most 2.5 s. Ignored packets are counted in the
- * log; timestamp jumps, marker bits and control port packets are logged too. */
+ * After next / previous: no request comes and nothing in the stream marks the new track (car 2026-11-24: timestamps
+ * and sequence numbers run on, no marker bit, nothing on the control port); NowPlaying reports it after 0.6 s while the
+ * old one still arrives, and 2.5 s cut the new one's start. Stream 102 is buffered audio sent ahead by its
+ * audioLatencyMs (1000): the quiet lasts that long, or the milliseconds in /fs/ram3/nbt-cp-skip-ms (100-3000, read at
+ * each key: for tuning). A timestamp jump, if one comes, ends it earlier. Ignored packets are counted in the log;
+ * timestamp jumps, marker bits and control port packets are logged too. */
+#define SKIP_FILE "/fs/ram3/nbt-cp-skip-ms"
 enum { QUIET_PAUSE = 1, QUIET_SKIP };
 static struct {
     int on, saw_paused;
     long long since;
-    unsigned ignored;
+    unsigned ignored, skip_ms;
 } g_quiet;
 
 static void quiet_end(const char* why)   /* with g_m held */
@@ -182,6 +185,14 @@ void audio_media_pause(void)
 
 void audio_media_skip(void)
 {
+    char b[16];
+    const int n = file_read(SKIP_FILE, b, sizeof(b) - 1);
+    int ms = 0;
+    if (n > 0) {
+        b[n] = 0;
+        ms = atoi(b);
+    }
+    g_quiet.skip_ms = ms >= 100 && ms <= 3000 ? (unsigned)ms : 1000;
     quiet_start(QUIET_SKIP, "next / previous");
 }
 
@@ -215,8 +226,8 @@ static int media_quiet(void)
 {
     if (g_quiet.on == QUIET_PAUSE && !g_quiet.saw_paused && ms_now() - g_quiet.since > 1500)
         quiet_end("no pause reported");
-    else if (g_quiet.on == QUIET_SKIP && ms_now() - g_quiet.since > 2500)
-        quiet_end("no timestamp jump within 2.5 s");
+    else if (g_quiet.on == QUIET_SKIP && ms_now() - g_quiet.since >= (long long)g_quiet.skip_ms)
+        quiet_end("the iPhone's audio lead passed");
     if (g_quiet.on)
         ++g_quiet.ignored;
     return g_quiet.on;
