@@ -148,7 +148,8 @@ volatile int audio_playing;
  * old one still arrives, and 2.5 s cut the new one's start. Stream 102 is buffered audio sent ahead by its
  * audioLatencyMs (1000): the quiet lasts that long, or the milliseconds in /fs/ram3/nbt-cp-skip-ms (100-3000, read at
  * each key: for tuning). A timestamp jump, if one comes, ends it earlier. Ignored packets are counted in the log;
- * timestamp jumps, marker bits and control port packets are logged too. */
+ * timestamp jumps, marker bits and control port packets are logged too. All of this only wireless (--wireless):
+ * over the cable the media is LPCM sent as it plays, and pause / next / previous behave as before. */
 #define SKIP_FILE "/fs/ram3/nbt-cp-skip-ms"
 enum { QUIET_PAUSE = 1, QUIET_SKIP };
 static struct {
@@ -178,14 +179,19 @@ static void quiet_start(int kind, const char* why)
     say("audio: %s key: %u queued media frames dropped", why, n);
 }
 
+/* wireless only: over the cable the media is LPCM on stream 100, sent as it plays, and the keys were fine as they were */
 void audio_media_pause(void)
 {
+    if (!g_opt.wireless)
+        return;
     quiet_start(QUIET_PAUSE, "pause");
 }
 
 void audio_media_skip(void)
 {
     char b[16];
+    if (!g_opt.wireless)
+        return;
     const int n = file_read(SKIP_FILE, b, sizeof(b) - 1);
     int ms = 0;
     if (n > 0) {
@@ -294,7 +300,7 @@ static void* stream_thread(void* arg)
         }
         m -= 16;
         ++s->packets;
-        {   /* timestamp jumps, the marker bit, the control port */
+        if (g_opt.wireless) {   /* timestamp jumps, the marker bit, the control port */
             const unsigned ts = get32(p + 4), seq = get16(p + 2);
             const int d = (int)(ts - s->last_ts), marker = p[1] & 0x80;
             const unsigned lost = (seq - s->last_seq) & 0xffff;   /* 1 = the next packet */

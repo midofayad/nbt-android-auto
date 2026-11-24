@@ -122,8 +122,8 @@ The phone's playing / paused state comes from the session: a small NBT-AAD core 
 - **Wireless CarPlay (2026-11-24):** a Radxa ZERO 3W on the USB port (1d6b:0104) starts `nbt_carplay --wireless`;
   the board relays the iPhone's Bluetooth iAP2 and bridges its access point to the NBT; sound over Wi-Fi as AAC-LC /
   Opus (FAAD2, libopus) ([WIRELESS-BRIDGE.md](WIRELESS-BRIDGE.md)).
-- **CarPlay pause, next, previous:** while music plays, these keys drop the music already queued and what the iPhone
-  still sends of the old track, so the change is heard when the key is pressed.
+- **Wireless CarPlay pause, next, previous:** while music plays, these keys drop the music already queued and what
+  the iPhone still sends of the old track, so the change is heard when the key is pressed (wired unchanged).
 - **Service log:** native_service writes to `/fs/ram3/nbt-aa-native/native.log` (before: nowhere), also in the
   installer's diagnostic zip.
 - **Service restarts:** `nbt_decoder` outlives them (its car stream works once per boot); when it has to be started
