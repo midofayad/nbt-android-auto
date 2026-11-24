@@ -153,6 +153,8 @@ void airplay_wireless(const struct iap2_carplay* cp);   /* wireless: the iAP2 tu
 
 int screen_open(const unsigned char key[32], unsigned short* port);
 void screen_close(void);
+long long screen_last_message(void);   /* ms_now() of the iPhone's last screen message (one comes every second), 0 =
+                                          no screen connection */
 
 /* ---- cp_audio.c / cp_mic.c ---- */
 

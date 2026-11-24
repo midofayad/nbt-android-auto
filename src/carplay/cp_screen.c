@@ -11,6 +11,7 @@
  * A still screen gets no frames (car 2026-11-23: gaps of several seconds; only opcode 2, an empty message, every
  * second), and nbt_decoder hides its window after decoder.stale ms (5000) without a picture: after 3 s without a frame
  * a key frame is asked for (forceKeyFrame), at most every 3 s.
+ * screen_last_message(): when the last message came; wireless, nothing for 10 s means the iPhone left (nbt_carplay.c).
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -27,6 +28,7 @@ static pthread_mutex_t g_m = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t g_thread;
 static int g_on, g_listen = -1, g_conn = -1;
 static volatile int g_closing;
+static volatile long long g_last_message;
 static unsigned char g_key[32];
 static int g_fifo = -1;
 static FILE* g_dump;
@@ -184,12 +186,14 @@ static void* screen_thread(void* arg)
     g_conn = c;
     pthread_mutex_unlock(&g_m);
     say("screen: the iPhone connected");
+    g_last_message = ms_now();
     while (!g_closing && !g_stop) {
         unsigned size, op;
         if (read_all(c, head, sizeof(head)))
             break;
         size = get32le(head);
         op = head[4];
+        g_last_message = ms_now();
         if (size > 8 * 1024 * 1024) {
             say("screen: message of %u bytes: stopping", size);
             break;
@@ -260,6 +264,7 @@ static void* screen_thread(void* arg)
             cp_reached(STOP_VIDEO);
     }
     say("screen: stream ended after %llu frames", g_frames);
+    g_last_message = 0;
     free(body);
     free(plain);
     free(out);
@@ -268,6 +273,11 @@ static void* screen_thread(void* arg)
     pthread_mutex_unlock(&g_m);
     net_close(c);
     return 0;
+}
+
+long long screen_last_message(void)
+{
+    return g_last_message;
 }
 
 int screen_open(const unsigned char key[32], unsigned short* port)
@@ -287,6 +297,7 @@ int screen_open(const unsigned char key[32], unsigned short* port)
     signal(SIGPIPE, SIG_IGN);
     g_closing = 0;
     g_frames = 0;
+    g_last_message = 0;
     g_params_n = 0;
     g_nal_len = 4;
     if (pthread_create(&g_thread, 0, screen_thread, 0)) {
@@ -305,6 +316,7 @@ void screen_close(void)
     g_closing = 1;
     pthread_join(g_thread, 0);
     g_on = 0;
+    g_last_message = 0;   /* no screen stream: nothing to watch */
     net_close(g_listen);
     g_listen = -1;
     if (g_fifo >= 0) {   /* nbt_decoder sees the end of this stream and waits for the next writer */

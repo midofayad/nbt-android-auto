@@ -97,6 +97,14 @@ until the iPhone plays again (it sends a short burst after it paused), so the mu
 The board must not take the iPhone's Bluetooth audio: `nbt-setup.sh` runs bluetoothd without its A2DP / AVRCP plugins
 and disables PipeWire / WirePlumber (with them, the trusted iPhone sent its sound to the board).
 
+## Leaving and coming back
+
+Over Wi-Fi an iPhone that goes out of range closes nothing: its connections just go quiet. `nbt_carplay` ends the
+session when the screen stream (a message about every second, even on a still screen) is silent for 10 s;
+native_service starts the next run, the board's relay connects to it again, and the board tries the paired iPhones'
+iAP2 channel every few seconds and also takes the iPhone's own Bluetooth connection. When the iPhone is back in range,
+the session starts again without anything to do on the phone (not yet tried in the car).
+
 ## Pairing again
 
 After "Forget This Device" on the iPhone, BlueZ fails the next pairings at their final check (Simple Pairing Complete:

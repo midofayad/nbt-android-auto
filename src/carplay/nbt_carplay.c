@@ -18,7 +18,9 @@
  * to our port 7100, tells us its Bluetooth and Wi-Fi (text lines), gets what it publishes over mDNS for us, then
  * relays the iPhone's iAP2 RFCOMM bytes ("iap2 <address>" line, then raw). iAP2 runs over that (cp_iap2.c, Bluetooth
  * link), the iPhone joins the Wi-Fi and comes to the AirPlay receiver, and moves iAP2 into the AirPlay tunnel. One
- * phone session per run: it ends when the AirPlay session ends, or when the relay ends before the iPhone came.
+ * phone session per run: it ends when the AirPlay session ends, when the relay ends before the iPhone came, or when
+ * the screen stream is silent for 10 s (the iPhone went out of range: its connections just go quiet); native_service
+ * starts the next run and the board reconnects when the iPhone is back.
  *
  * usage: nbt_carplay [--wireless] [--stop-after usb|iap2|net|airplay|video [--seconds N]] [--pcap FILE] [--dump FILE]
  *                    [--audio-dump DIR] [--no-audio] [--no-mic] [--fps N] [--knob-invert] [--state DIR]
@@ -69,6 +71,11 @@ static void* watch(void* arg)
         }
         if (usb_gone())
             g_stop = 1;
+        if (g_opt.wireless && g_relay_up && airplay_active() && screen_last_message() &&
+            ms_now() - screen_last_message() > 10000) {   /* over Wi-Fi a vanished iPhone closes nothing */
+            say("nbt_carplay: nothing from the iPhone for 10 s (out of range?): session over");
+            g_stop = 1;
+        }
         if (g_opt.wireless && g_relay_up) {   /* the session is over 5 s after the AirPlay session ended */
             if (airplay_active()) {
                 seen = 1;
