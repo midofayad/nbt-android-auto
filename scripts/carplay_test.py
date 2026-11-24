@@ -283,11 +283,11 @@ def main():
     status, body = r.request("SETUP", "/1", plistlib.dumps({"streams": [
         {"type": 110, "streamConnectionID": conn_screen},
         {"type": 100, "audioType": "media", "audioFormat": 0x800, "streamConnectionID": conn_audio - (1 << 64)},
-        {"type": 102, "audioType": "media", "audioFormat": 0x400000, "streamConnectionID": 7}]},
+        {"type": 102, "audioType": "media", "audioFormat": 0x1000000, "streamConnectionID": 7}]},
         fmt=plistlib.FMT_BINARY))
     streams = plistlib.loads(body)["streams"]
     types = [x["type"] for x in streams]
-    check("SETUP streams: screen and LPCM audio taken, AAC refused %s" % types, types == [110, 100])
+    check("SETUP streams: screen and LPCM audio taken, AAC-ELD refused %s" % types, types == [110, 100])
     audio = streams[1]
     check("SETUP streams: 64-bit connection ID echoed unsigned", audio["streamConnectionID"] == conn_audio)
     status, _ = r.request("RECORD", "/1")

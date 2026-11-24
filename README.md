@@ -35,8 +35,9 @@ A fork of [JayJay3071/nbt-android-auto](https://github.com/JayJay3071/nbt-androi
 ## Known limitations
 
 - No wireless CarPlay: wired-to-wireless CarPlay adapters need a USB role switch the NBT cannot do
-  ([docs/WIRELESS.md](docs/WIRELESS.md)). Wireless Android Auto works through an adapter. A bridge board for wireless
-  CarPlay is in progress ([docs/WIRELESS-BRIDGE.md](docs/WIRELESS-BRIDGE.md)), not yet tested in the car.
+  ([docs/WIRELESS.md](docs/WIRELESS.md)). Wireless Android Auto works through an adapter. Wireless CarPlay through a
+  bridge board is in progress ([docs/WIRELESS-BRIDGE.md](docs/WIRELESS-BRIDGE.md)): picture and controls work in the
+  car, sound is being tested.
 - Phone calls still go over Bluetooth, as before.
 - After changing the picture mode or the decoder, the picture comes back only after a system restart (the iDrive page
   asks for it).

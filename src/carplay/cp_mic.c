@@ -7,6 +7,7 @@
  * Key", AAD = header bytes 4..11, nonce = 4 zero bytes + a 64-bit little-endian counter, which follows the tag).
  * Captured as Android Auto's aa_mic does: A2I endpoint /output_multich_0, 22050 Hz, 4 channels (the plain NBT's
  * microphone bus); channels 0 and 1 averaged, resampled to the iPhone's rate, amplified (NBT_MIC_GAIN, default 4).
+ * Wireless: the iPhone asks for Opus (mono, 16 / 24 / 48 kHz): each packet is one 20 ms Opus frame (cp_codec.c).
  * /fs/ram3/nbt-aa-mic exists while it runs (nbt_knob: the car's own source is muted meanwhile).
  */
 #include <pthread.h>
@@ -24,7 +25,7 @@ static int g_on;
 static volatile int g_closing;
 static struct net_addr g_to;
 static unsigned char g_key[32];
-static int g_rate, g_channels, g_frames;
+static int g_rate, g_channels, g_frames, g_codec;
 
 static void* mic_thread(void* arg)
 {
@@ -35,14 +36,16 @@ static void* mic_thread(void* arg)
     const unsigned in_rate = getenv("NBT_MIC_RATE") ? (unsigned)atoi(getenv("NBT_MIC_RATE")) : 22050;
     const unsigned in_ch = getenv("NBT_MIC_CHANNELS") ? (unsigned)atoi(getenv("NBT_MIC_CHANNELS")) : 4;
     const int gain = getenv("NBT_MIC_GAIN") ? atoi(getenv("NBT_MIC_GAIN")) : 4;
-    const unsigned per_packet = g_frames > 0 ? (unsigned)g_frames : (unsigned)g_rate / 50;   /* 20 ms */
+    const unsigned per_packet = g_frames > 0 && g_codec != CODEC_OPUS ? (unsigned)g_frames : (unsigned)g_rate / 50;
     short* pkt = (short*)malloc(per_packet * 2 * (unsigned)g_channels);
-    unsigned char* wire = (unsigned char*)malloc(12 + per_packet * 2 * (unsigned)g_channels + 16 + 8);
+    unsigned char* wire = (unsigned char*)malloc(12 + per_packet * 2 * (unsigned)g_channels + 16 + 8 + 1500);
+    unsigned char opus[1500];
+    struct encoder* enc = g_codec == CODEC_OPUS ? encoder_open(g_rate, g_channels) : 0;
     unsigned n = 0, pos = 0, seq = 0, ts = 0;
     unsigned long long counter = 0, sent = 0;
     int prev = 0, s = -1, r;
     (void)arg;
-    if (!pkt || !wire || in_ch < 1 || in_rate < 8000 || a2i_load(&a)) {
+    if (!pkt || !wire || in_ch < 1 || in_rate < 8000 || (g_codec == CODEC_OPUS && !enc) || a2i_load(&a)) {
         say("mic: no microphone (A2I library or memory)");
         goto out;
     }
@@ -74,8 +77,8 @@ static void* mic_thread(void* arg)
         goto out;
     }
     flag_set(MIC_FLAG, 0);
-    say("mic: %s %u Hz %u ch -> %d Hz %d ch, %u frames per packet, gain %d", endpoint, in_rate, in_ch, g_rate,
-        g_channels, per_packet, gain);
+    say("mic: %s %u Hz %u ch -> %s %d Hz %d ch, %u frames per packet, gain %d", endpoint, in_rate, in_ch,
+        codec_name(g_codec), g_rate, g_channels, per_packet, gain);
     while (!g_closing && !g_stop) {
         void* buf = 0;
         size_t size = 0;
@@ -102,13 +105,23 @@ static void* mic_thread(void* arg)
                 if (++n == per_packet) {
                     unsigned char nonce[12];
                     unsigned i;
-                    const unsigned bytes = per_packet * 2 * (unsigned)g_channels;
+                    unsigned bytes = per_packet * 2 * (unsigned)g_channels;
                     unsigned char* body = (unsigned char*)pkt;
-                    for (i = 0; i + 1 < bytes; i += 2) {   /* to big-endian */
-                        const unsigned char t = body[i];
-                        body[i] = body[i + 1];
-                        body[i + 1] = t;
-                    }
+                    if (enc) {
+                        const int k = encoder_run(enc, pkt, per_packet, opus, sizeof(opus));
+                        if (k <= 0) {
+                            n = 0;
+                            pos += in_rate;
+                            continue;
+                        }
+                        body = opus;
+                        bytes = (unsigned)k;
+                    } else
+                        for (i = 0; i + 1 < bytes; i += 2) {   /* to big-endian */
+                            const unsigned char t = body[i];
+                            body[i] = body[i + 1];
+                            body[i + 1] = t;
+                        }
                     wire[0] = 0x80;
                     wire[1] = 100 & 0x7f;
                     put16(wire + 2, seq & 0xffff);
@@ -134,6 +147,7 @@ static void* mic_thread(void* arg)
     a.close(&h);
     say("mic: closed after %llu packets", sent);
 out:
+    encoder_close(enc);
     flag_clear(MIC_FLAG);
     net_close(s);
     free(pkt);
@@ -141,15 +155,16 @@ out:
     return 0;
 }
 
-void mic_start(const struct net_addr* to, const unsigned char key[32], int rate, int channels, int payload_type,
-               int frames_per_packet)
+void mic_start(const struct net_addr* to, const unsigned char key[32], int codec, int rate, int channels,
+               int payload_type, int frames_per_packet)
 {
     (void)payload_type;
     mic_stop();
-    if (rate < 8000 || channels < 1 || channels > 2) {
-        say("mic: the iPhone's format %d Hz %d ch is not taken", rate, channels);
+    if ((codec != CODEC_LPCM && codec != CODEC_OPUS) || rate < 8000 || channels < 1 || channels > 2) {
+        say("mic: the iPhone's format (%s %d Hz %d ch) is not taken", codec_name(codec), rate, channels);
         return;
     }
+    g_codec = codec;
     g_to = *to;
     memcpy(g_key, key, 32);
     g_rate = rate;

@@ -163,9 +163,22 @@ int audio_stream_open(int type, const char* audio_type, unsigned long long forma
 void audio_stream_close(int type);   /* -1: all */
 struct bp;
 void audio_feedback(struct bp* streams, unsigned long long ntp);
-int audio_rate(unsigned long long format, int* channels);
-void mic_start(const struct net_addr* to, const unsigned char key[32], int rate, int channels, int payload_type,
-               int frames_per_packet);
+/* cp_codec.c: format bits, decoders (AAC-LC, Opus), the Opus encoder for the microphone */
+enum { CODEC_NONE, CODEC_LPCM, CODEC_AAC_LC, CODEC_OPUS };
+int audio_format(unsigned long long format, int* codec, int* rate, int* channels);   /* 0 = taken */
+const char* codec_name(int codec);
+struct decoder;
+struct decoder* decoder_open(int codec, int rate, int channels);
+int decoder_rate(const struct decoder* d);       /* of the output */
+int decoder_channels(const struct decoder* d);
+int decoder_run(struct decoder* d, const unsigned char* in, unsigned n, short* out, unsigned max_frames);   /* frames */
+void decoder_close(struct decoder* d);
+struct encoder;
+struct encoder* encoder_open(int rate, int channels);
+int encoder_run(struct encoder* e, const short* pcm, unsigned frames, unsigned char* out, unsigned max);   /* bytes */
+void encoder_close(struct encoder* e);
+void mic_start(const struct net_addr* to, const unsigned char key[32], int codec, int rate, int channels,
+               int payload_type, int frames_per_packet);
 void mic_stop(void);
 
 /* ---- cp_input.c: nbt_knob's key lines ---- */

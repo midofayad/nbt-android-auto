@@ -97,13 +97,14 @@ if ! $CC -O2 -Wall -Wextra -Wc,-std=gnu99 $TLSINC nbt_carplay_probe.c $TLSLIBS -
   echo "SKIPPED: nbt_carplay_probe did not compile (see above)"
 fi
 
-echo "== nbt_carplay (wired CarPlay: lwIP, Monocypher, Mbed TLS; docs/CARPLAY.md)"
-if test ! -d $W/lwip/src -o ! -d $W/monocypher/src; then
-  echo "SKIPPED: no lwIP / Monocypher sources (build_all.py could not get them)"
+echo "== nbt_carplay (CarPlay: lwIP, Monocypher, Mbed TLS, libopus, FAAD2; docs/CARPLAY.md)"
+if test ! -d $W/lwip/src -o ! -d $W/monocypher/src -o ! -d $W/opus/celt -o ! -d $W/faad2/libfaad; then
+  echo "SKIPPED: no lwIP / Monocypher / libopus / FAAD2 sources (build_all.py could not get them)"
 else
   mkdir -p $W/carplay-obj
   LW=$W/lwip/src
-  CPINC="-I$W/src/carplay -I$W/src/carplay/lwip_port -I$LW/include -I$W/monocypher/src -I$W/monocypher/src/optional $TLSINC"
+  CPINC="-I$W/src/carplay -I$W/src/carplay/lwip_port -I$LW/include -I$W/monocypher/src -I$W/monocypher/src/optional \
+    -I$W/opus/include -I$W/faad2/include $TLSINC"
   ok=1
   # third-party code without warnings; ours with
   for c in $LW/core/init.c $LW/core/def.c $LW/core/inet_chksum.c $LW/core/ip.c $LW/core/mem.c $LW/core/memp.c \
@@ -115,12 +116,24 @@ else
            $W/monocypher/src/optional/monocypher-ed25519.c; do
     $CC -O2 -w -Wc,-std=gnu99 $CPINC -c $c -o $W/carplay-obj/`basename $c .c`.o || ok=0
   done
+  # libopus (floating point, no SIMD) and FAAD2 (as its CMake build), objects prefixed against name clashes
+  O=$W/opus
+  for c in $O/celt/*.c $O/silk/*.c $O/silk/float/*.c $O/src/*.c; do
+    case `basename $c` in opus_custom_demo.c|opus_compare.c|opus_demo.c|repacketizer_demo.c) continue;; esac
+    $CC -O2 -w -Wc,-std=gnu99 -DOPUS_BUILD -DUSE_ALLOCA -DHAVE_LRINTF -DHAVE_LRINT -I$O/include -I$O/celt -I$O/silk \
+      -I$O/silk/float -c $c -o $W/carplay-obj/opus-`basename $c .c`.o || ok=0
+  done
+  for c in $W/faad2/libfaad/*.c; do
+    $CC -O2 -w -Wc,-std=gnu99 -DHAVE_INTTYPES_H=1 -DHAVE_MEMCPY=1 -DHAVE_STRING_H=1 -DHAVE_STRINGS_H=1 \
+      -DHAVE_SYS_STAT_H=1 -DHAVE_SYS_TYPES_H=1 -DHAVE_LRINTF=1 -DPACKAGE_VERSION=\"2.11.2\" -I$W/faad2/include \
+      -I$W/faad2/libfaad -c $c -o $W/carplay-obj/faad-`basename $c .c`.o || ok=0
+  done
   cd $W/src/carplay
   for c in nbt_carplay cp_util cp_acp cp_usb cp_lockdown cp_iap2 cp_ncm cp_net_lwip cp_bplist cp_crypto cp_airplay \
-           cp_screen cp_audio cp_mic cp_input lwip_port/sys_arch; do
+           cp_screen cp_audio cp_codec cp_mic cp_input lwip_port/sys_arch; do
     $CC -O2 -Wall -Wextra -Wc,-std=gnu99 $CPINC -c $c.c -o $W/carplay-obj/cp-`basename $c`.o || ok=0
   done
-  if test $ok = 1 && $CC $W/carplay-obj/*.o $TLSLIBS -lusbdi -o $OUT/nbt_carplay; then
+  if test $ok = 1 && $CC $W/carplay-obj/*.o $TLSLIBS -lusbdi -lm -o $OUT/nbt_carplay; then
     :
   else
     echo "SKIPPED: nbt_carplay did not compile (see above)"

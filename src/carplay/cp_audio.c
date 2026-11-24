@@ -3,9 +3,10 @@
  * Copyright (C) 2026 Valentin Radu
  *
  * Streams (SETUP): 100 main (audioType media, default, alert, telephony, speechRecognition), 101 alternate (navigation
- * prompts). Each is RTP over UDP: a 12-byte header, the payload sealed with ChaCha20-Poly1305 (AAD = header bytes
- * 4..11, nonce = 4 zero bytes + the packet's last 8 bytes), big-endian LPCM. Here: decrypted, converted to 48 kHz
- * stereo and queued as "media" (100 / media) or "prompt" (everything else).
+ * prompts), 102 main buffered (media, wireless). Each is RTP over UDP: a 12-byte header, the payload sealed with
+ * ChaCha20-Poly1305 (AAD = header bytes 4..11, nonce = 4 zero bytes + the packet's last 8 bytes): big-endian LPCM
+ * (wired), or over Wi-Fi one AAC-LC access unit (102) / one Opus packet (100, 101), decoded with cp_codec.c. Here:
+ * decrypted, decoded, converted to 48 kHz stereo and queued as "media" (100 / 102 media) or "prompt" (the rest).
  * Outputs, as Android Auto's (aa_media_out): media and, while the car's source is ours (f6), the prompts on the main
  * output (input_stereo_1, music ducked under them); while another source plays, the prompts go to the prompt output
  * (input_stereo_3) over connection b8, which nbt_knob builds while /fs/ram3/nbt-aa-prompt exists and reports with
@@ -111,7 +112,8 @@ static int q_take(struct queue* q, int* l, int* r)
 /* ---- streams ---- */
 
 struct stream {
-    int on, type, queue, rate, channels;
+    int on, type, queue, rate, channels, codec;
+    struct decoder* dec;
     char audio_type[32];
     unsigned long long format, connection;
     unsigned char key[32];
@@ -132,25 +134,6 @@ struct stream {
 };
 
 static struct stream g_s[3];   /* types 100, 101, 102 */
-
-int audio_rate(unsigned long long format, int* channels)
-{
-    static const int rates[5] = {8000, 16000, 24000, 32000, 44100};
-    int bit;
-    for (bit = 2; bit < 16; ++bit)
-        if (format >> bit & 1)
-            break;
-    if (bit <= 11) {
-        *channels = bit % 2 ? 2 : 1;
-        return rates[(bit - 2) / 2];
-    }
-    if (bit == 14 || bit == 15) {
-        *channels = bit == 15 ? 2 : 1;
-        return 48000;
-    }
-    *channels = 0;
-    return 0;   /* AAC, Opus, ...: not taken */
-}
 
 static void wav_header(FILE* f, int rate, int channels, unsigned bytes)
 {
@@ -190,6 +173,8 @@ static void* stream_thread(void* arg)
 {
     struct stream* s = (struct stream*)arg;
     unsigned char p[4096], pcm[4096], nonce[12];
+    static short decoded[3][5760 * 2];   /* per stream type: up to 120 ms at 48 kHz, stereo */
+    short* dec = decoded[s->type - 100];
     struct net_addr from;
     long long last_log = ms_now();
     while (!s->closing && !g_stop) {
@@ -215,22 +200,35 @@ static void* stream_thread(void* arg)
             s->started = 1;
             s->first_sample = get32(p + 4);
             s->origin_ms = ms_now();
-            say("audio %d (%s): first packet, %u Hz %u channel(s), %u bytes", s->type, s->audio_type, s->rate,
-                s->channels, m);
+            say("audio %d (%s): first packet, %s %u Hz %u channel(s), %u bytes", s->type, s->audio_type,
+                codec_name(s->codec), s->rate, s->channels, m);
         }
-        for (i = 0; i + 1 < m; i += 2) {   /* big-endian samples */
-            const unsigned char t = pcm[i];
-            pcm[i] = pcm[i + 1];
-            pcm[i + 1] = t;
+        if (s->dec) {   /* AAC-LC / Opus: s->rate and s->channels become the decoder's output */
+            const int k = decoder_run(s->dec, pcm, m, dec, 5760);
+            if (k <= 0) {
+                if (k < 0 && !s->bad++)
+                    say("audio %d: %s packet not decoded", s->type, codec_name(s->codec));
+                continue;
+            }
+            s->rate = decoder_rate(s->dec);
+            s->channels = decoder_channels(s->dec);
+            frames = (unsigned)k;
+            m = frames * 2u * (unsigned)s->channels;
+        } else {
+            for (i = 0; i + 1 < m; i += 2) {   /* big-endian samples */
+                const unsigned char t = pcm[i];
+                pcm[i] = pcm[i + 1];
+                pcm[i + 1] = t;
+            }
+            frames = m / (2u * (unsigned)s->channels);
         }
         if (s->wav) {
-            fwrite(pcm, 1, m & ~1u, s->wav);
+            fwrite(s->dec ? (const void*)dec : (const void*)pcm, 1, m & ~1u, s->wav);
             s->wav_bytes += m & ~1u;
         }
-        frames = m / (2u * (unsigned)s->channels);
         pthread_mutex_lock(&g_m);
         for (i = 0; i < frames; ++i) {
-            const short* f = (const short*)(pcm + i * 2 * s->channels);
+            const short* f = s->dec ? dec + i * s->channels : (const short*)(pcm + i * 2 * s->channels);
             resample(s, &g_q[s->queue], f[0], s->channels > 1 ? f[1] : f[0]);
         }
         g_q[s->queue].last_in = ms_now();
@@ -256,18 +254,28 @@ int audio_stream_open(int type, const char* audio_type, unsigned long long forma
     snprintf(s->audio_type, sizeof(s->audio_type), "%s", audio_type);
     s->format = format;
     s->connection = connection;
-    s->rate = audio_rate(format, &s->channels);
-    if (!s->rate) {
-        say("audio %d (%s): format 0x%llx not taken (not LPCM)", type, audio_type, format);
+    if (audio_format(format, &s->codec, &s->rate, &s->channels)) {
+        say("audio %d (%s): format 0x%llx not taken", type, audio_type, format);
         return -1;
     }
-    s->queue = type == 100 && !strcmp(audio_type, "media") ? Q_MEDIA : Q_PROMPT;
+    if (s->codec != CODEC_LPCM && !(s->dec = decoder_open(s->codec, s->rate, s->channels))) {
+        say("audio %d (%s): no %s decoder for %d Hz %d channel(s)", type, audio_type, codec_name(s->codec), s->rate,
+            s->channels);
+        return -1;
+    }
+    if (s->dec) {
+        s->rate = decoder_rate(s->dec);
+        s->channels = decoder_channels(s->dec);
+    }
+    s->queue = (type == 100 || type == 102) && !strcmp(audio_type, "media") ? Q_MEDIA : Q_PROMPT;
     memcpy(s->key, key, 32);
     s->data = net_udp(0, &s->data_port);
     s->control = net_udp(0, &s->control_port);
     if (s->data < 0 || s->control < 0) {
         net_close(s->data);
         net_close(s->control);
+        decoder_close(s->dec);
+        s->dec = 0;
         return -1;
     }
     if (g_opt.audio_dump) {
@@ -280,13 +288,15 @@ int audio_stream_open(int type, const char* audio_type, unsigned long long forma
     if (pthread_create(&s->thread, 0, stream_thread, s)) {
         net_close(s->data);
         net_close(s->control);
+        decoder_close(s->dec);
+        s->dec = 0;
         return -1;
     }
     s->on = 1;
     *data_port = s->data_port;
     *control_port = s->control_port;
-    say("audio %d (%s): %u Hz, %u channel(s) -> %s, ports %u / %u", type, audio_type, s->rate, s->channels,
-        s->queue == Q_MEDIA ? "media" : "prompts", s->data_port, s->control_port);
+    say("audio %d (%s): %s %u Hz, %u channel(s) -> %s, ports %u / %u", type, audio_type, codec_name(s->codec),
+        s->rate, s->channels, s->queue == Q_MEDIA ? "media" : "prompts", s->data_port, s->control_port);
     return 0;
 }
 
@@ -305,6 +315,8 @@ void audio_stream_close(int type)
             wav_header(s->wav, s->rate, s->channels, s->wav_bytes);
             fclose(s->wav);
         }
+        decoder_close(s->dec);
+        s->dec = 0;
         say("audio %d (%s): closed after %llu packets", s->type, s->audio_type, s->packets);
         pthread_mutex_lock(&g_m);
         if (g_q[s->queue].count)

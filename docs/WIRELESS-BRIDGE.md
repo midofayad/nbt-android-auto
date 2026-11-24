@@ -3,7 +3,9 @@
 <!-- SPDX-License-Identifier: GPL-3.0-only -->
 <!-- Copyright (C) 2026 Valentin Radu -->
 
-Status (2026-11-24): written and host-tested, **not yet tried in the car**.
+Status (2026-11-24, in the car with an iPhone 15 Pro Max on iOS 17): Bluetooth iAP2, authentication with the car's 2.0B
+chip, the iPhone joining the board's access point, AirPlay pairing and the picture (about 30 fps) work. Sound over
+Wi-Fi (AAC-LC / Opus decoding, below) is host-tested, not yet tried in the car.
 
 The NBT does CarPlay itself, as with the cable (`nbt_carplay`: iAP2 with the car's own Apple authentication chip, the
 AirPlay receiver, picture, sound, controller). A small Linux board on the NBT's USB port does what the NBT cannot: the
@@ -23,7 +25,12 @@ iPhone --Wi-Fi (board's access point)--> br0 bridge --usb0 (NCM)--> nbt_carplay'
 2. `nbt-bridge.py` connects to that port and exchanges a few text lines: the board's Bluetooth address, its access
    point (BSSID, SSID, passphrase, channel, WPA2) for the NBT; the NBT's AirPlay identity (device ID, key, features)
    for the board.
-3. The board publishes the NBT's AirPlay receiver over mDNS (`_airplay._tcp`, with avahi) and opens the iAP2 RFCOMM
+3. The board's Bluetooth carries the service records of a head unit with wireless CarPlay: the accessory's iAP2
+   service (`00000000-deca-fade-deca-deafdecacaff`) and the CarPlay vehicle service
+   (`d31fbf50-5d57-2797-a240-41cd484388ec`), registered by `nbt-bridge.py` over bluetoothd's local SDP socket
+   (`bluetoothd --compat`). The iPhone reads them when it pairs (2026-11-24 without them: identification,
+   authentication and the Wi-Fi configuration went through, but the iPhone never joined the access point).
+   The board publishes the NBT's AirPlay receiver over mDNS (`_airplay._tcp`, with avahi) and opens the iAP2 RFCOMM
    channel of a paired iPhone (SDP service `00000000-deca-fade-deca-deafdecacafe`). From then on it relays bytes.
 4. Over that, `nbt_carplay` runs iAP2 as xcertplay's wireless client: marker, SYN after the iPhone's marker, link
    acknowledgements; identification with the Bluetooth and wireless CarPlay transports; authentication with the car's
@@ -63,10 +70,25 @@ Debugging over its serial console: pins 6 (GND), 8 (TX), 10 (RX), 1500000 baud.
   `native.log`.
 - Board: `journalctl -u nbt-bridge -f` (relay, RFCOMM, mDNS, the connect request), `journalctl -u NetworkManager`.
 
+## Sound
+
+Over Wi-Fi the iPhone does not use LPCM: with only LPCM offered it set up no audio stream at all. As xcertplay's
+wireless table, `nbt_carplay --wireless` offers media as AAC-LC 44.1 / 48 kHz stereo on stream 102 and the rest as
+Opus mono (Siri 24 / 48 kHz, navigation and alerts 48 kHz, telephony 16 / 24 / 48 kHz), and the microphone as Opus
+16 kHz. `cp_codec.c` decodes with FAAD2 and libopus and encodes the microphone with libopus; the decoded sound goes the
+same way as the cable's.
+
+The board must not take the iPhone's Bluetooth audio: `nbt-setup.sh` runs bluetoothd without its A2DP / AVRCP plugins
+and disables PipeWire / WirePlumber (with them, the trusted iPhone sent its sound to the board).
+
+## Pairing again
+
+After "Forget This Device" on the iPhone, BlueZ fails the next pairings at their final check (Simple Pairing Complete:
+Authentication Failure, every few hundred ms) until its Bluetooth starts afresh. `nbt-bridge` resets the chip and
+restarts bluetoothd after 3 confirmations within 30 s without a pairing.
+
 ## Open points
 
-- Whether the iPhone accepts the car's 2.0B chip for wireless CarPlay (it does over the cable).
-- Sound: `nbt_carplay` offers only LPCM (as over the cable). xcertplay offers AAC-LC for media and Opus or AAC-ELD for
-  the rest over Wi-Fi; if the iPhone wants compressed audio over Wi-Fi, decoders are needed.
 - The board's start-up time (Linux boot) before CarPlay can start.
 - The board's current draw from the NBT's port.
+- The AirPlay iAP2 tunnel (stream 130) is implemented but the iPhone kept Bluetooth for iAP2 so far.

@@ -242,7 +242,7 @@ struct session {
     int screen, audio[3], mic_pending;
     struct net_addr mic_to;
     unsigned char mic_key[32];
-    int mic_rate, mic_channels, mic_frames;
+    int mic_rate, mic_channels, mic_frames, mic_codec;
     int keepalive_s;
     int tunnel;                                         /* the iAP2 stream (130) is ours */
     unsigned char raw[1 << 17], plain[1 << 18];         /* control connection: received, decrypted */
@@ -479,18 +479,29 @@ static void format(struct bp* list, int type, const char* audio_type, unsigned l
 
 /* LPCM format bits (xcertplay CarPlayAudioFormats, wired): bit 2+2i mono / 3+2i stereo for 8, 16, 24, 32, 44.1 kHz,
  * 14 / 15 for 48 kHz. Assistant mono 24-48 kHz, navigation / alerts mono or stereo 44.1 / 48 kHz, telephony mono
- * 8-24 kHz, media stereo 44.1 / 48 kHz, microphone mono 8 / 16 kHz. No AAC (type 102): nothing here decodes it. */
+ * 8-24 kHz, media stereo 44.1 / 48 kHz, microphone mono 8 / 16 kHz.
+ * Wireless (xcertplay's wireless table, Opus on): media also as AAC-LC 44.1 / 48 kHz stereo on stream 102 (bits 22,
+ * 23), the iPhone picks it over Wi-Fi; the rest Opus mono (bits 28 / 29 / 30 = 16 / 24 / 48 kHz): assistant 24 / 48,
+ * navigation / alerts 48, telephony 16 / 24 / 48, microphone 16 kHz. Decoded / encoded in cp_codec.c. */
 #define F_ASSISTANT 0x4540ULL
 #define F_NAVIGATION 0xcc00ULL
 #define F_PHONE 0x54ULL
 #define F_MEDIA 0x8800ULL
 #define F_MIC 0x14ULL
+#define F_W_ASSISTANT 0x60000000ULL
+#define F_W_NAVIGATION 0x40000000ULL
+#define F_W_PHONE 0x70000000ULL
+#define F_W_MIC 0x10000000ULL
+#define F_W_MEDIA_AAC 0xc00000ULL
 
 static struct bp* info_plist(void)
 {
     struct bp* d = bp_dict();
     struct bp *modes, *list, *disp, *area, *safe;
-    const unsigned long long mic = g_opt.mic ? F_MIC : 0;
+    const int w = g_opt.wireless;
+    const unsigned long long mic = !g_opt.mic ? 0 : w ? F_W_MIC : F_MIC;
+    const unsigned long long assistant = w ? F_W_ASSISTANT : F_ASSISTANT, navigation = w ? F_W_NAVIGATION : F_NAVIGATION,
+                             phone = w ? F_W_PHONE : F_PHONE;
     bp_set(d, "sourceVersion", bp_str(SOURCE_VERSION));
     bp_set(d, "features", bp_uint(FEATURES));
     bp_set(d, "statusFlags", bp_int(4));
@@ -521,15 +532,19 @@ static struct bp* info_plist(void)
         latency(list, 100, "alert");
         latency(list, 101, 0);
         latency(list, 101, "default");
+        if (w)
+            latency(list, 102, "default");
         list = bp_set(d, "audioFormats", bp_array());
-        format(list, 100, "compatibility", F_ASSISTANT, mic);
-        format(list, 101, "compatibility", F_NAVIGATION, 0);
-        format(list, 100, "default", F_ASSISTANT, mic);
-        format(list, 100, "alert", F_NAVIGATION, 0);
+        format(list, 100, "compatibility", assistant, mic);
+        format(list, 101, "compatibility", navigation, 0);
+        format(list, 100, "default", assistant, mic);
+        format(list, 100, "alert", navigation, 0);
         format(list, 100, "media", F_MEDIA, 0);
-        format(list, 100, "telephony", F_PHONE, mic);
-        format(list, 100, "speechRecognition", F_ASSISTANT, mic);
-        format(list, 101, "default", F_NAVIGATION, 0);
+        format(list, 100, "telephony", phone, mic);
+        format(list, 100, "speechRecognition", assistant, mic);
+        format(list, 101, "default", navigation, 0);
+        if (w)
+            format(list, 102, "media", F_W_MEDIA_AAC, 0);
     }
     list = bp_set(d, "extendedFeatures", bp_array());
     bp_add(list, bp_str("vocoderInfo"));
@@ -1383,11 +1398,13 @@ static void setup_streams(struct session* s, const struct bp* list, struct respo
             }
             /* the microphone: the iPhone gives its port in the main audio stream's SETUP */
             if (type == 100 && g_opt.mic && bp_num_or(st, "dataPort", 0) > 0) {
-                int ch = 1;
+                int ch = 1, codec = 0, rate = 0;
                 s->mic_to = s->peer;
                 s->mic_to.port = (unsigned short)bp_num_or(st, "dataPort", 0);
                 stream_key(s, connection, "DataStream-Input-Encryption-Key", s->mic_key);
-                s->mic_rate = audio_rate(fmt, &ch);
+                audio_format(fmt, &codec, &rate, &ch);
+                s->mic_codec = codec;
+                s->mic_rate = rate;
                 s->mic_channels = ch;
                 s->mic_frames = (int)bp_num_or(st, "framesPerPacket", 0);
                 s->mic_pending = 1;
@@ -1638,7 +1655,7 @@ static void* session_thread(void* arg)
                 break;
             if (s->mic_pending) {   /* after the SETUP answer, as xcertplay */
                 s->mic_pending = 0;
-                mic_start(&s->mic_to, s->mic_key, s->mic_rate, s->mic_channels, 100, s->mic_frames);
+                mic_start(&s->mic_to, s->mic_key, s->mic_codec, s->mic_rate, s->mic_channels, 100, s->mic_frames);
             }
             memmove(plain, plain + used, pn - (unsigned)used);
             pn -= (unsigned)used;
