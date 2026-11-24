@@ -134,6 +134,22 @@ struct stream {
 };
 
 static struct stream g_s[3];   /* types 100, 101, 102 */
+volatile int audio_playing;
+static long long g_media_quiet_until;   /* after a pause key */
+
+/* the queued music would play on after the pause key (0.2-0.4 s, plus the car's output): dropped, and what the iPhone
+ * sent before it saw the key too */
+void audio_media_pause(void)
+{
+    unsigned n;
+    pthread_mutex_lock(&g_m);
+    n = g_q[Q_MEDIA].count;
+    g_q[Q_MEDIA].rd = g_q[Q_MEDIA].count = 0;
+    g_q[Q_MEDIA].waiting = 1;
+    g_media_quiet_until = ms_now() + 700;
+    pthread_mutex_unlock(&g_m);
+    say("audio: pause key: %u queued media frames dropped", n);
+}
 
 static void wav_header(FILE* f, int rate, int channels, unsigned bytes)
 {
@@ -227,6 +243,8 @@ static void* stream_thread(void* arg)
             s->wav_bytes += m & ~1u;
         }
         pthread_mutex_lock(&g_m);
+        if (s->queue == Q_MEDIA && ms_now() < g_media_quiet_until)
+            frames = 0;   /* sent before the iPhone saw the pause key */
         for (i = 0; i < frames; ++i) {
             const short* f = s->dec ? dec + i * s->channels : (const short*)(pcm + i * 2 * s->channels);
             resample(s, &g_q[s->queue], f[0], s->channels > 1 ? f[1] : f[0]);

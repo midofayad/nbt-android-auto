@@ -167,6 +167,8 @@ void audio_feedback(struct bp* streams, unsigned long long ntp);
 enum { CODEC_NONE, CODEC_LPCM, CODEC_AAC_LC, CODEC_OPUS };
 int audio_format(unsigned long long format, int* codec, int* rate, int* channels);   /* 0 = taken */
 const char* codec_name(int codec);
+extern volatile int audio_playing;   /* the iPhone's playback state (iAP2 NowPlaying): 1 playing */
+void audio_media_pause(void);        /* a pause key: queued media dropped, arriving media ignored for 0.7 s */
 struct decoder;
 struct decoder* decoder_open(int codec, int rate, int channels);
 int decoder_rate(const struct decoder* d);       /* of the output */

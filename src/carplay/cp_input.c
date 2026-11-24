@@ -8,7 +8,8 @@
  *   tilt up / down / left / right (19-22) -> knob y -1 / +1, x -1 / +1 (a nudge: report, then rest)
  *   push (23) -> knob select held while pressed; BACK (4) -> knob back; HOME (3) -> knob home
  *   media keys: PLAY_PAUSE 85, PLAY 126, PAUSE 127, NEXT 87, PREVIOUS 88 -> the media HID (1 play, 2 pause,
- *   3 play/pause, 4 next, 5 previous; then 0)
+ *   3 play/pause, 4 next, 5 previous; then 0); a pause while music plays also drops the queued music at once
+ *   (cp_audio.c), so it stops when pressed
  *   voice (84, the long press of the steering wheel button) -> Siri
  */
 #include <errno.h>
@@ -80,16 +81,22 @@ static void line(const char* l)
         knob(0, 0, 0);
         break;
     case 85:
-        if (value)
+        if (value) {
             media(3);
+            if (audio_playing)   /* this press pauses */
+                audio_media_pause();
+        }
         break;
     case 126:
         if (value)
             media(1);
         break;
     case 127:
-        if (value)
+        if (value) {
             media(2);
+            if (audio_playing)
+                audio_media_pause();
+        }
         break;
     case 87:
         if (value)
